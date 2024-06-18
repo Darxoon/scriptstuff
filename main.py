@@ -162,8 +162,10 @@ def print_function_impl(fn: FunctionImpl) -> str:
     out += "]\n    body:\n"
     
     for x in fn.bytecode:
-        if isinstance(x, FunctionDef) or isinstance(x, FunctionImport):
-            out += f"      - call {x.name} # 0x{x.id:x}\n"
+        if isinstance(x, FunctionDef):
+            out += f"      - call {x.name} # 0x{x.id:x} (local)\n"
+        elif isinstance(x, FunctionImport):
+            out += f"      - call {x.name} # 0x{x.id:x} (imported)\n"
         elif isinstance(x, Instruction):
             out += f"      - {x.label} # 0x{x.value:x}\n"
         else:

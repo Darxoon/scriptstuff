@@ -75,6 +75,66 @@ def print_function_def(fn: FunctionDef) -> str:
     return out
 
 @dataclass
+class GlobalVar:
+    name: str
+    id: int
+    field_0x4: int
+    field_0x8: int
+    field_0xc: int
+
+@dataclass
+class LocalVar:
+    id: int
+    field_0x4: int
+    field_0x8: int
+
+def read_variable_defs(section: bytes) -> tuple[list[GlobalVar], list[LocalVar]]:
+    arr = enumerate(array('I', section))
+    
+    count = next(arr)[1]
+    
+    global_vars = []
+    local_vars = []
+    
+    for i, value in arr:
+        if value == 0xFFFFFFFF:
+            name_buffer = section[i * 4 + 0x14:]
+            name_bytelen = name_buffer.index(0)
+            name = str(name_buffer[:name_bytelen], 'utf-8')
+            
+            id = next(arr)[1]
+            field_0x4 = next(arr)[1]
+            field_0x8 = next(arr)[1]
+            field_0xc = next(arr)[1]
+            
+            global_vars.append(GlobalVar(name, id, field_0x4, field_0x8, field_0xc))
+            
+            for _ in range(ceil((name_bytelen + 1) / 4)):
+                next(arr)
+        elif value == 0:
+            id = next(arr)[1]
+            field_0x4 = next(arr)[1]
+            field_0x8 = next(arr)[1]
+            
+            local_vars.append(LocalVar(id, field_0x4, field_0x8))
+        else:
+            raise Exception(f"Weird")
+    
+    return global_vars, local_vars
+
+def print_global_var(var: GlobalVar) -> str:
+    return f"""  - name: {var.name}
+    id: 0x{var.id:x}
+    field_0x4: 0x{var.field_0x4:x}
+    field_0x8: {var.field_0x8}
+    field_0xc: {var.field_0xc}\n"""
+
+def print_local_var(var: GlobalVar) -> str:
+    return f"""  - id: 0x{var.id:x}
+    field_0x4: 0x{var.field_0x4:x}
+    field_0x8: {var.field_0x8}\n"""
+
+@dataclass
 class FunctionImport:
     name: str
     field_0x0: int
@@ -107,14 +167,15 @@ def print_function_import(fn: FunctionImport) -> str:
 class Instruction:
     value: int
     label: str
+    empty_line_after: bool
 
 INSTRUCTIONS = {
-    0xc: Instruction(0xc, "block_a"),
-    0x3d: Instruction(0x3d, "block_b"),
-    0x18: Instruction(0x18, "block_c"),
-    0x40: Instruction(0x40, "end_block"),
-    0x11: Instruction(0x11, "return"),
-    0x9: Instruction(0x9, "end"),
+    # 0xc: Instruction(0xc, "block_a"),
+    # 0x3d: Instruction(0x3d, "block_b"),
+    # 0x18: Instruction(0x18, "block_c"),
+    # 0x40: Instruction(0x40, "end_block"),
+    0x11: Instruction(0x11, "return", True),
+    0x9: Instruction(0x9, "end", False),
 }
 
 @dataclass
@@ -166,8 +227,14 @@ def print_function_impl(fn: FunctionImpl) -> str:
             out += f"      - call {x.name} # 0x{x.id:x} (local)\n"
         elif isinstance(x, FunctionImport):
             out += f"      - call {x.name} # 0x{x.id:x} (imported)\n"
+        elif isinstance(x, GlobalVar):
+            out += f"      - push {x.name} # 0x{x.id:x} (global)\n"
+        elif isinstance(x, LocalVar):
+            out += f"      - push local {x.id}\n"
         elif isinstance(x, Instruction):
             out += f"      - {x.label} # 0x{x.value:x}\n"
+            if x.empty_line_after:
+                out += "      \n"
         else:
             out += f"      - 0x{x:x}\n"
     
@@ -186,9 +253,11 @@ def main():
     
     sections = read_ksm_container(input_file)
     
+    # section 0 (mysterious)
     out_str = 'section_0:\n'
     out_str += print_raw_integers(sections[0])
     
+    # section 1 (function definitions)
     function_defs = read_values_from_section(read_function_def, sections[1], 0xFFFFFFFF)
     
     for fn in function_defs:
@@ -198,6 +267,23 @@ def main():
     for fn in function_defs:
         out_str += print_function_def(fn)
     
+    # section 2 (var definitions?)
+    global_vars, local_vars = read_variable_defs(sections[2])
+    
+    var_str = 'global_variables:\n'
+    for var in global_vars:
+        symbol_ids[var.id] = var
+        var_str += print_global_var(var)
+    
+    var_str += 'local_variables:\n'
+    for var in local_vars:
+        symbol_ids[var.id] = var
+        var_str += print_local_var(var)
+    
+    with open(argv[1] + '.var.yaml', 'w') as f:
+        f.write(var_str)
+    
+    # section 5 (function imports)
     function_imports = read_values_from_section(read_function_import, sections[5], 0xFFFFFFFF)
     
     for fn in function_imports:

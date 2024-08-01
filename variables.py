@@ -16,41 +16,45 @@ class Var:
     flags: int
     reference_value: int | str
 
+def read_variable(arr: enumerate[int], section: bytes) -> Var:
+    offset, value = next(arr)
+    id = next(arr)[1]
+    raw_status = next(arr)[1]
+    reference_value = next(arr)[1]
+    
+    status = raw_status & 0xffffff
+    flags = raw_status >> 24
+    
+    if value == 0xFFFFFFFF:
+        name = read_string(section, offset + 5)
+        
+        for _ in range(next(arr)[1]):
+            next(arr)
+    else:
+        assert value == 0
+        name = None
+    
+    if status == 3:
+        assert reference_value == 0
+        j, word_len = next(arr)
+        
+        reference_value = read_string(section, j + 1)
+        
+        for _ in range(word_len):
+            next(arr)
+    
+    return Var(name, id, status, flags, reference_value)
+
 def read_variable_defs(section: bytes) -> list[Var]:
     arr = enumerate(array('I', section))
     
     count = next(arr)[1]
     variables = []
     
-    for i, value in arr:
-        id = next(arr)[1]
-        raw_status = next(arr)[1]
-        reference_value = next(arr)[1]
-        
-        status = raw_status & 0xffffff
-        flags = raw_status >> 24
-        
-        if value == 0xFFFFFFFF:
-            name = read_string(section, i + 5)
-            
-            for _ in range(next(arr)[1]):
-                next(arr)
-        else:
-            assert value == 0
-            name = None
-        
-        if status == 3:
-            assert reference_value == 0
-            j, word_len = next(arr)
-            
-            reference_value = read_string(section, j + 1)
-            
-            for _ in range(word_len):
-                next(arr)
-        
-        variables.append(Var(name, id, status, flags, reference_value))
+    for _ in range(count):
+        variables.append(read_variable(arr, section))
     
-    assert len(variables) == count
+    assert next(arr, None) == None
     return variables
 
 VAR_STATUS_NAMES = {
@@ -60,7 +64,9 @@ VAR_STATUS_NAMES = {
     0xe: 'Uninitialized',
 }
 
-def print_var(var: Var) -> str:
+def print_var(var: Var, indentation_level: int = 1) -> str:
+    indent = '  ' * indentation_level
+    
     if isinstance(var.reference_value, str):
         reference_value = repr(var.reference_value)
     elif var.reference_value != 0:
@@ -74,16 +80,19 @@ def print_var(var: Var) -> str:
         status = var.status
     
     if var.name:
-        return f"""  - name: {var.name}
-    id: 0x{var.id:x}
-    status: {status}
-    flags: 0x{var.flags:x}
-    reference_value: {reference_value}\n"""
+        result = f"""{indent}- name: {var.name}
+{indent}  id: 0x{var.id:x}
+{indent}  status: {status}\n"""
     else:
-        return f"""  - id: 0x{var.id:x}
-    status: {status}
-    flags: 0x{var.flags:x}
-    reference_value: {reference_value}\n"""
+        result = f"""{indent}- id: 0x{var.id:x}
+{indent}  status: {status}\n"""
+    
+    if var.flags != 0:
+        result += f"{indent}  flags: 0x{var.flags:x}\n"
+    if var.reference_value != 0:
+        result += f"{indent}  reference_value: {reference_value}\n"
+    
+    return result
 
 
 def write_variables(sections: list[bytes], symbol_ids: dict):

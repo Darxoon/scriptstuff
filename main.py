@@ -5,6 +5,7 @@ from sys import argv
 from typing import TypeVar
 
 from functions import write_functions
+from tables import write_tables
 from variables import write_variables
 
 T = TypeVar('T')
@@ -44,14 +45,15 @@ def main():
     sections = read_ksm_container(input_file)
     
     write_variables(sections, symbol_ids)
+    write_tables(sections, symbol_ids)
     write_functions(sections, symbol_ids)
     
-    # section 0 (mysterious)
-    out_str = 'section_0:\n'
-    out_str += print_raw_integers(sections[0])
+    # # section 0 (mysterious)
+    # out_str = 'section_0:\n'
+    # out_str += print_raw_integers(sections[0])
     
-    with open(argv[1] + '.yaml', 'w') as f:
-        f.write(out_str)
+    # with open(argv[1] + '.yaml', 'w') as f:
+    #     f.write(out_str)
 
 if __name__ ==  '__main__':
     main()

@@ -2,6 +2,7 @@ from array import array
 from dataclasses import dataclass
 from sys import argv
 
+from tables import Table, print_table, read_table
 from variables import Var, print_var, read_variable
 
 def read_string(section: bytes, offset_words: int) -> str:
@@ -52,33 +53,6 @@ def print_function_import(fn: FunctionImport) -> str:
     field_0x8: {fn.field_0x8}
     id: 0x{fn.id:x}\n"""
 
-
-# TODO: move Table into its own file eventually
-@dataclass
-class Table:
-    name: str
-    id: int
-    field_0x8: int
-    field_0xc: int
-    field_0x10: int
-
-def read_table(arr: enumerate[int], section: bytes):
-    offset, value = next(arr)
-    id = next(arr)[1]
-    field_0x8 = next(arr)[1]
-    field_0xc = next(arr)[1]
-    field_0x10 = next(arr)[1]
-    
-    if value == 0xFFFFFFFF:
-        name = read_string(section, offset + 6)
-        
-        for _ in range(next(arr)[1]):
-            next(arr)
-    else:
-        assert value == 0
-        name = None
-    
-    return Table(name, id, field_0x8, field_0xc, field_0x10)
 
 @dataclass
 class ScriptUnk:
@@ -156,8 +130,6 @@ def read_function_definitions(section: bytes, code_section: bytes) -> list[Funct
         field_0x30 = next(arr)[1]
         field_0x34 = next(arr)[1]
         
-        assert is_public == 0
-        
         code = code_arr[code_offset:code_end]
         
         if value == 0xFFFFFFFF:
@@ -172,14 +144,16 @@ def read_function_definitions(section: bytes, code_section: bytes) -> list[Funct
         variables = []
         for _ in range(next(arr)[1]):
             variables.append(read_variable(arr, section))
-        
-        assert next(arr)[1] == 0, "Tables"
+            
+        tables = []
+        for _ in range(next(arr)[1]):
+            tables.append(read_table(arr, section))
         
         unk = []
         for _ in range(next(arr)[1]):
             unk.append(read_unk(arr, section))
         
-        definitions.append(FunctionDef(name, id, is_public, field_0xc, field_0x30, field_0x34, code, variables, [], unk))
+        definitions.append(FunctionDef(name, id, is_public, field_0xc, field_0x30, field_0x34, code, variables, tables, unk))
     
     assert len(definitions) == count
     return definitions
@@ -196,7 +170,10 @@ def print_function_def(fn: FunctionDef, symbol_ids: dict) -> str:
         result += "    \n    variables:\n"
         for var in fn.vars:
             result += print_var(var, 3)
-    
+    if fn.tables and len(fn.tables) > 0:
+        result += "    \n    tables:\n"
+        for table in fn.tables:
+            result += print_table(table, 3)
     if fn.unk and len(fn.unk) > 0:
         result += "    \n    unknown:\n"
         for var in fn.unk:
@@ -228,7 +205,9 @@ def print_function_def(fn: FunctionDef, symbol_ids: dict) -> str:
                     elif isinstance(reference_value, str):
                         value = f"push ref {reference_value} # 0x{x:x} (status {status} flags {'0x' if flags != 0 else ''}{flags:x})"
                     else:
-                        value = f"push var 0x{x:x}"
+                        value = f"0x{x:x} # variable (status {status} flags {'0x' if flags != 0 else ''}{flags:x})"
+                case Table(name):
+                    value = f"push table {name} # 0x{x:x}"
                 case None:
                     if not is_header and x in INSTRUCTIONS:
                         value = f"{INSTRUCTIONS[x].label} # 0x{x:x}{"\n      " if INSTRUCTIONS[x].empty_line_after else ""}"

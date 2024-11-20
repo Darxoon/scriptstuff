@@ -1,9 +1,10 @@
 from array import array
 from dataclasses import dataclass
+import json
 from sys import argv
 
 from tables import Table, print_table, read_table
-from variables import Var, print_var, read_variable
+from variables import Var, VarCategory, print_var, read_variable
 
 def read_string(section: bytes, offset_words: int) -> str:
     buffer = section[offset_words * 4:]
@@ -89,13 +90,11 @@ class Instruction:
     empty_line_after: bool
 
 INSTRUCTIONS = {
-    # 0xc: Instruction(0xc, "block_a"),
-    # 0x3d: Instruction(0x3d, "block_b"),
-    # 0x18: Instruction(0x18, "block_c"),
-    # 0x40: Instruction(0x40, "end_block"),
-    # 0x9: Instruction(0x9, "header", False),
-    0x8: Instruction(0x8, "header_end", True),
-    0x11: Instruction(0x11, "yield", True),
+    0x11: Instruction(0x11, "end", True),
+    0xc: Instruction(0xc, "cmd_Call", False),
+    0x80: Instruction(0xc, "cmd_CallVar", False),
+    0x3d: Instruction(0x3d, "cmd_Set", False),
+    0x29: Instruction(0x29, "cmd_Switch", False),
 }
 
 
@@ -143,7 +142,7 @@ def read_function_definitions(section: bytes, code_section: bytes) -> list[Funct
         
         variables = []
         for _ in range(next(arr)[1]):
-            variables.append(read_variable(arr, section))
+            variables.append(read_variable(arr, section, VarCategory.Func))
             
         tables = []
         for _ in range(next(arr)[1]):
@@ -186,35 +185,38 @@ def print_function_def(fn: FunctionDef, symbol_ids: dict) -> str:
         
         is_header = True
         for x in fn.code:
-            if x == 8:
+            if x == 8 and is_header:
                 result += "    \n    body:\n"
                 is_header = False
                 continue
             
-            match symbol_ids.get(x, None):
-                case FunctionImport(name):
-                    value = f"call {name} # 0x{x:x} (imported)"
-                case FunctionDef(name):
-                    if is_header:
-                        value = f"{name} # 0x{x:x} (local)"
-                    else:
-                        value = f"call {name} # 0x{x:x} (local)"
-                case Var(name, _, status, flags, reference_value):
-                    if name:
-                        value = f"push var {name} # 0x{x:x} (status {status} flags {'0x' if flags != 0 else ''}{flags:x})"
-                    elif isinstance(reference_value, str):
-                        value = f"push ref {reference_value} # 0x{x:x} (status {status} flags {'0x' if flags != 0 else ''}{flags:x})"
-                    else:
-                        value = f"0x{x:x} # variable (status {status} flags {'0x' if flags != 0 else ''}{flags:x})"
-                case Table(name):
-                    value = f"push table {name} # 0x{x:x}"
-                case None:
-                    if not is_header and x in INSTRUCTIONS:
-                        value = f"{INSTRUCTIONS[x].label} # 0x{x:x}{"\n      " if INSTRUCTIONS[x].empty_line_after else ""}"
-                    else:
+            if not is_header and x & 0xfffffeff in INSTRUCTIONS:
+                instruction = INSTRUCTIONS[x & 0xfffffeff]
+                value = f"{instruction.label}{'*' if x & 0x100 else ''} # 0x{x:x}{"\n      " if instruction.empty_line_after else ""}"
+            else:
+                match symbol_ids.get(x, None):
+                    case FunctionImport(name):
+                        value = f"func {name} # 0x{x:x} (imported)"
+                    case FunctionDef(name):
+                        if is_header:
+                            value = f"{name} # 0x{x:x}"
+                        else:
+                            value = f"func {name} # 0x{x:x} (local)"
+                    case Var(name, category, _, status, flags, user_data):
+                        if name:
+                            value = f"var {name} # 0x{x:x} ({category.name} status {status} flags {'0x' if flags != 0 else ''}{flags:x})"
+                        elif isinstance(user_data, int) and category == VarCategory.Const:
+                            value = f"int {user_data} # 0x{x:x} ({category.name} status {status} flags {'0x' if flags != 0 else ''}{flags:x})"
+                        elif isinstance(user_data, str):
+                            value = f"{json.dumps(user_data, ensure_ascii=False)} # 0x{x:x} ({category.name} status {status} flags {'0x' if flags != 0 else ''}{flags:x})"
+                        else:
+                            value = f"0x{x:x} # variable ({category.name} status {status} flags {'0x' if flags != 0 else ''}{flags:x})"
+                    case Table(name):
+                        value = f"table {name} # 0x{x:x}"
+                    case None:
                         value = f"0x{x:x}"
-                case _:
-                    raise Exception(f"Unknown symbol {symbol_ids[x]}")
+                    case _:
+                        raise Exception(f"Unknown symbol {symbol_ids[x]}")
             
             result += f"      - {value}\n"
     

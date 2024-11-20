@@ -1,6 +1,15 @@
 from array import array
 from dataclasses import dataclass
+from enum import Enum
 from sys import argv
+
+class VarCategory(Enum):
+    # script binary scope
+    Var1 = 0
+    Const = 1
+    Global = 2
+    # function local
+    Func = 3
 
 def read_string(section: bytes, offset_words: int) -> str:
     buffer = section[offset_words * 4:]
@@ -10,17 +19,18 @@ def read_string(section: bytes, offset_words: int) -> str:
 @dataclass
 class Var:
     name: str | None
+    category: VarCategory
     
     id: int
     status: int
     flags: int
-    reference_value: int | str
+    user_data: int | str
 
-def read_variable(arr: enumerate[int], section: bytes) -> Var:
+def read_variable(arr: enumerate[int], section: bytes, category: VarCategory) -> Var:
     offset, value = next(arr)
     id = next(arr)[1]
     raw_status = next(arr)[1]
-    reference_value = next(arr)[1]
+    user_data = next(arr)[1]
     
     status = raw_status & 0xffffff
     flags = raw_status >> 24
@@ -35,24 +45,24 @@ def read_variable(arr: enumerate[int], section: bytes) -> Var:
         name = None
     
     if status == 3:
-        assert reference_value == 0
+        assert user_data == 0
         j, word_len = next(arr)
         
-        reference_value = read_string(section, j + 1)
+        user_data = read_string(section, j + 1)
         
         for _ in range(word_len):
             next(arr)
     
-    return Var(name, id, status, flags, reference_value)
+    return Var(name, category, id, status, flags, user_data)
 
-def read_variable_defs(section: bytes) -> list[Var]:
+def read_variable_defs(section: bytes, category: VarCategory) -> list[Var]:
     arr = enumerate(array('I', section))
     
     count = next(arr)[1]
     variables = []
     
     for _ in range(count):
-        variables.append(read_variable(arr, section))
+        variables.append(read_variable(arr, section, category))
     
     assert next(arr, None) == None
     return variables
@@ -67,18 +77,20 @@ VAR_STATUS_NAMES = {
 def print_var(var: Var, indentation_level: int = 1) -> str:
     indent = '  ' * indentation_level
     
-    if isinstance(var.reference_value, str):
-        reference_value = repr(var.reference_value)
-    elif var.reference_value != 0:
-        reference_value = f"0x{var.reference_value:x}"
+    if isinstance(var.user_data, str):
+        user_data = repr(var.user_data)
+    elif var.user_data != 0:
+        user_data = f"0x{var.user_data:x}"
     else:
-        reference_value = var.reference_value
+        user_data = var.user_data
     
     if (var.status) in VAR_STATUS_NAMES:
         status = VAR_STATUS_NAMES[var.status] + f" # {var.status}"
     else:    
         status = var.status
     
+    # no need to print category as the variables are
+    # already grouped by category in output
     if var.name:
         result = f"""{indent}- name: {var.name}
 {indent}  id: 0x{var.id:x}
@@ -89,15 +101,15 @@ def print_var(var: Var, indentation_level: int = 1) -> str:
     
     if var.flags != 0:
         result += f"{indent}  flags: 0x{var.flags:x}\n"
-    if var.reference_value != 0:
-        result += f"{indent}  reference_value: {reference_value}\n"
+    if var.user_data != 0:
+        result += f"{indent}  content: {user_data}\n"
     
     return result
 
 
 def write_variables(sections: list[bytes], symbol_ids: dict):
     # section 2
-    variables = read_variable_defs(sections[2])
+    variables = read_variable_defs(sections[2], VarCategory.Var1)
     
     var_str = 'variables:\n'
     prev_status = None
@@ -110,7 +122,7 @@ def write_variables(sections: list[bytes], symbol_ids: dict):
         var_str += print_var(var)
     
     # section 4
-    variables2 = read_variable_defs(sections[4])
+    variables2 = read_variable_defs(sections[4], VarCategory.Const)
     
     var_str += '\nvariables2:\n'
     prev_status = None
@@ -123,7 +135,7 @@ def write_variables(sections: list[bytes], symbol_ids: dict):
         var_str += print_var(var)
     
     # section 6
-    global_variables = read_variable_defs(sections[6])
+    global_variables = read_variable_defs(sections[6], VarCategory.Global)
     
     var_str += '\nglobal_variables:\n'
     prev_status = None

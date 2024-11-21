@@ -86,9 +86,9 @@ def print_unk(unk: ScriptUnk) -> str:
 # script expressions
 @dataclass
 class Expr:
-    elements: list[int]
+    elements: list[Var | int]
 
-def read_expr(initial_element: int | None, arr: enumerate[int]) -> Expr:
+def read_expr(initial_element: int | None, arr: enumerate[int], symbol_ids: dict) -> Expr:
     elements = []
     
     if initial_element is not None:
@@ -98,31 +98,44 @@ def read_expr(initial_element: int | None, arr: enumerate[int]) -> Expr:
         if value == 0x40:
             break
         
-        elements.append(value)
+        var = symbol_ids.get(value, value)
+        elements.append(var)
     
     return Expr(elements)
 
 def print_expr_or_var(value, braces_around_expression = False) -> str:
     match value:
         case Expr(elements):
-            content = ' '.join(f"?0x{x:x}" for x in elements)
+            content = ' '.join(print_expr_or_var(x) for x in elements)
             if braces_around_expression:
                 return f'( {content} )'
             else:
                 return content
-        case Var(name, category, id, status, flags, user_data):
+        case Var(name, alias, category, id, status, flags, user_data):
             if name is not None:
                 return f"{category.name}:{name}"
+            elif alias is not None:
+                return f"{category.name}:{alias}"
             elif category == VarCategory.Const and user_data is not None:
                 return f"{user_data}`" if isinstance(user_data, int) else repr(user_data)
             else:
                 return f"{category.name}:0x{id:x}"
-        case FunctionImport(name):
+        case FunctionImport(name) | FunctionDef(name):
             return f"fn:{name}"
+        case ScriptUnk(name, id):
+            if name is not None:
+                return f"unk:{name}"
+            else:
+                return f"unk:{hex(id)}"
+        case Table(name, id):
+            if name is not None:
+                return f"table:{name}"
+            else:
+                return f"table:{hex(id)}"
         case int(n):
             return f"?0x{n:x}"
         case _:
-            raise Exception("Unknown thing")
+            raise Exception(f"Unknown thing {repr(value)}")
 
 # script instructions
 @dataclass 
@@ -145,7 +158,7 @@ def read_call_cmd(arr: enumerate[int], symbol_ids: dict, opcode: int, is_const: 
             var = symbol_ids.get(value, value)
             args.append(var)
         else:
-            args.append(read_expr(value, arr))
+            args.append(read_expr(value, arr, symbol_ids))
     
     return CallCmd(is_const, func, args)
 
@@ -169,7 +182,7 @@ def read_call_var_cmd(arr: enumerate[int], symbol_ids: dict, opcode: int, is_con
             var = symbol_ids.get(value, value)
             args.append(var)
         else:
-            args.append(read_expr(value, arr))
+            args.append(read_expr(value, arr, symbol_ids))
     
     return CallVarCmd(is_const, func, args)
 
@@ -189,7 +202,7 @@ def read_set_cmd(arr: enumerate[int], symbol_ids: dict, opcode: int, is_const: b
         value = symbol_ids.get(value_int, value_int)
         assert isinstance(value, Var) or isinstance(value, int)
     else:
-        value = read_expr(None, arr)
+        value = read_expr(None, arr, symbol_ids)
     
     return SetCmd(is_const, destination, value)
 
@@ -227,7 +240,7 @@ def read_get_args_cmd(arr: enumerate[int], symbol_ids: dict, opcode: int, is_con
 class UnknownCmd:
     opcode: int
     is_const: bool
-    args: list[int]
+    args: list[Expr | Var | int]
 
 def read_unknown_cmd(arr: enumerate[int], symbol_ids: dict, opcode: int, is_const: bool) -> UnknownCmd:
     args = []
@@ -235,7 +248,11 @@ def read_unknown_cmd(arr: enumerate[int], symbol_ids: dict, opcode: int, is_cons
         if value == 0x11:
             break
         
-        args.append(value)
+        if is_const:
+            var = symbol_ids.get(value, value)
+            args.append(var)
+        else:
+            args.append(read_expr(value, arr, symbol_ids))
     
     return UnknownCmd(opcode, is_const, args)
 
@@ -282,7 +299,7 @@ def read_function_definitions(section: bytes, code_section: bytes, symbol_ids: d
         field_0x30 = next(arr)[1]
         field_0x34 = next(arr)[1]
         
-        code = code_section_arr[code_offset:code_end]
+        code = code_section_arr[code_offset:code_end] # TODO: is this correct?
         
         if value == 0xFFFFFFFF:
             name = read_string(section, i + 9)
@@ -294,8 +311,14 @@ def read_function_definitions(section: bytes, code_section: bytes, symbol_ids: d
             name = None
         
         variables = []
-        for _ in range(next(arr)[1]):
-            variables.append(read_variable(arr, section, VarCategory.Func))
+        for i in range(next(arr)[1]):
+            var = read_variable(arr, section, VarCategory.Func)
+            
+            if var.name == None:
+                assert (var.id & 0xFF) == 0
+                var.alias = str((var.id >> 8) & 0xFF) # TODO: make this more exact
+            
+            variables.append(var)
             
         tables = []
         for _ in range(next(arr)[1]):
@@ -325,7 +348,7 @@ def analyze_function_def(fn: FunctionDef, symbol_ids: dict):
     
     fn.instructions = instructions
 
-def print_function_def(fn: FunctionDef, symbol_ids: dict) -> str:
+def print_function_def(fn: FunctionDef) -> str:
     result = f"""  - name: {fn.name if fn.name != None else 'null'}
     id: 0x{fn.id:x}
     is_public: {fn.is_public}
@@ -362,7 +385,9 @@ def print_function_def(fn: FunctionDef, symbol_ids: dict) -> str:
                 case GetArgsCmd(func, args):
                     value = f"GetArgs self:{func.name} ( {', '.join(print_expr_or_var(x) for x in args)} )"
                 case UnknownCmd(opcode, is_const, args):
-                    value = f"Unk_0x{opcode:x}{'*' if is_const else ' '} ( {', '.join(f"?0x{x:x}" for x in args)} )"
+                    value = f"Unk_0x{opcode:x}{'*' if is_const else ' '} ( {', '.join(print_expr_or_var(x) for x in args)} )"
+                case _:
+                    raise Exception()
             
             if ': ' in value:
                 result += f"      - '{value}'\n"
@@ -390,7 +415,15 @@ def write_functions(sections: list[bytes], symbol_ids: dict):
     
     for fn in definitions:
         if fn.code is not None and len(fn.code) > 0:
-            analyze_function_def(fn, symbol_ids)
+            local_symbol_ids = symbol_ids.copy()
+            for var in fn.vars:
+                local_symbol_ids[var.id] = var
+            for table in fn.tables:
+                local_symbol_ids[table.id] = table
+            for unk in fn.unk:
+                local_symbol_ids[unk.id] = unk
+            
+            analyze_function_def(fn, local_symbol_ids)
     
     out_str += 'definitions:\n'
     is_first = True
@@ -401,7 +434,7 @@ def write_functions(sections: list[bytes], symbol_ids: dict):
             else:
                 out_str += '    \n'
         
-        out_str += print_function_def(fn, symbol_ids)
+        out_str += print_function_def(fn)
         is_first = False
     
     with open(argv[1] + '.functions.yaml', 'w') as f:

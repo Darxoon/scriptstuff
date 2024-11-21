@@ -1,6 +1,8 @@
 from array import array
+from ctypes import c_int
 from dataclasses import dataclass
 from enum import Enum
+import struct
 from sys import argv
 
 class VarCategory(Enum):
@@ -9,7 +11,8 @@ class VarCategory(Enum):
     Const = 1
     Global = 2
     # function local
-    Func = 3
+    Local = 3
+    Func = 4
 
 def read_string(section: bytes, offset_words: int) -> str:
     buffer = section[offset_words * 4:]
@@ -19,6 +22,7 @@ def read_string(section: bytes, offset_words: int) -> str:
 @dataclass
 class Var:
     name: str | None
+    alias: str | None
     category: VarCategory
     
     id: int
@@ -30,10 +34,16 @@ def read_variable(arr: enumerate[int], section: bytes, category: VarCategory) ->
     offset, value = next(arr)
     id = next(arr)[1]
     raw_status = next(arr)[1]
-    user_data = next(arr)[1]
     
     status = raw_status & 0xffffff
     flags = raw_status >> 24
+    
+    if status == 0:
+        user_data = struct.unpack('!f', struct.pack('!I', next(arr)[1]))[0]
+    elif status == 1:
+        user_data = c_int(next(arr)[1]).value
+    else:
+        user_data = next(arr)[1]
     
     if value == 0xFFFFFFFF:
         name = read_string(section, offset + 5)
@@ -53,7 +63,7 @@ def read_variable(arr: enumerate[int], section: bytes, category: VarCategory) ->
         for _ in range(word_len):
             next(arr)
     
-    return Var(name, category, id, status, flags, user_data)
+    return Var(name, None, category, id, status, flags, user_data)
 
 def read_variable_defs(section: bytes, category: VarCategory) -> list[Var]:
     arr = enumerate(array('I', section))
@@ -68,6 +78,9 @@ def read_variable_defs(section: bytes, category: VarCategory) -> list[Var]:
     return variables
 
 VAR_STATUS_NAMES = {
+    0: 'Float',
+    1: 'Int',
+    3: 'String',
     4: 'Alloc',
     5: 'UserVar',
     0xd: 'QueuedFree',
@@ -79,29 +92,34 @@ def print_var(var: Var, indentation_level: int = 1) -> str:
     
     if isinstance(var.user_data, str):
         user_data = repr(var.user_data)
-    elif var.user_data != 0:
-        user_data = f"0x{var.user_data:x}"
+    elif var.status in [0, 1] or var.user_data == 0:
+        user_data = str(var.user_data)
     else:
-        user_data = var.user_data
+        user_data = hex(var.user_data)
     
-    if (var.status) in VAR_STATUS_NAMES:
+    if var.status in VAR_STATUS_NAMES:
         status = VAR_STATUS_NAMES[var.status] + f" # {var.status}"
     else:    
         status = var.status
     
     # no need to print category as the variables are
     # already grouped by category in output
+    result = result = f"{indent}- "
+    
     if var.name:
-        result = f"""{indent}- name: {var.name}
-{indent}  id: 0x{var.id:x}
-{indent}  status: {status}\n"""
-    else:
-        result = f"""{indent}- id: 0x{var.id:x}
-{indent}  status: {status}\n"""
+        result += f"name: {var.name}\n{indent}  "
+    
+    if var.alias is not None:
+        result += f"alias: {var.category.name}:{var.alias}\n{indent}  "
+    
+    result += f"id: 0x{var.id:x}\n"
+    
+    result += f"{indent}  status: {status}\n"
     
     if var.flags != 0:
         result += f"{indent}  flags: 0x{var.flags:x}\n"
-    if var.user_data != 0:
+    
+    if var.user_data != 0 or var.category == VarCategory.Const:
         result += f"{indent}  content: {user_data}\n"
     
     return result
@@ -146,6 +164,11 @@ def write_variables(sections: list[bytes], symbol_ids: dict):
         prev_status = var.status
         symbol_ids[var.id] = var
         var_str += print_var(var)
+    
+    # local variables (defined implicitly)
+    for i in range(0x16): # TODO: how many are there?
+        var = Var(None, f"{i:X}", VarCategory.Local, 0x10000100 | i, 0, 0, 0)
+        symbol_ids[var.id] = var
     
     with open(argv[1] + '.variables.yaml', 'w') as f:
         f.write(var_str)

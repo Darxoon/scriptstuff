@@ -84,9 +84,6 @@ def print_label(label: Label) -> str:
 
 
 # script expressions
-class EndingSequence(Exception):
-    pass
-
 @dataclass
 class Expr:
     elements: list['Var | CallCmd | int']
@@ -100,9 +97,6 @@ def read_expr(initial_element: int | None, arr: enumerate[int], symbol_ids: dict
     for _, value in arr:
         if value == 0x40:
             break
-        
-        if value == 0x11 and raise_on_ending_sequence:
-            raise EndingSequence()
         
         if value == 0xc:
             elements.append(read_call_cmd(arr, symbol_ids, 0xc, False))
@@ -148,8 +142,6 @@ def print_expr_or_var(value, braces_around_expression = False) -> str:
                 return f'( {content} )'
             else:
                 return content
-        case EndingSequence():
-            return 'AAAAAAAAAA'
         case int(n):
             return f"?0x{n:x}"
         case _:
@@ -300,15 +292,8 @@ def read_unknown_cmd(arr: enumerate[int], symbol_ids: dict, opcode: int, is_cons
         if value == 0x11:
             break
         
-        if is_const:
-            var = symbol_ids.get(value, value)
-            args.append(var)
-        else:
-            try:
-                args.append(read_expr(value, arr, symbol_ids, True))
-            except EndingSequence:
-                args.append(EndingSequence())
-                break
+        var = symbol_ids.get(value, value)
+        args.append(var)
     
     return UnknownCmd(opcode, is_const, args)
 

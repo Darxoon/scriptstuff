@@ -122,11 +122,11 @@ def write_variables(sections: list[bytes], symbol_ids: dict):
         var_str += print_var(var)
     
     # section 4
-    variables2 = read_variable_defs(sections[4], VarCategory.Const)
+    constants = read_variable_defs(sections[4], VarCategory.Const)
     
-    var_str += '\nvariables2:\n'
+    var_str += '\nconstants:\n'
     prev_status = None
-    for var in variables2:
+    for var in constants:
         if prev_status != None and var.status != prev_status:
             var_str += '  \n'
         

@@ -10,7 +10,7 @@ def read_string(section: bytes, offset_words: int) -> str:
 
 @dataclass
 class Table:
-    name: str
+    name: str | None
     id: int
     field_0x8: int
     field_0xc: int

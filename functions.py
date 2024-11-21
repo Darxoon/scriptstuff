@@ -54,17 +54,17 @@ def print_function_import(fn: FunctionImport) -> str:
     return f"  - {{ id: 0x{fn.id:x}, name: '{fn.name}', field_0x4: {fn.field_0x4}, field_0x8: {fn.field_0x8} }}\n"
 
 
-# ScriptUnk (?)
+# labels
 @dataclass
-class ScriptUnk:
+class Label:
     name: str | None
     id: int
-    field_0x8: int
+    code_offset: int
 
-def read_unk(arr: enumerate[int], section: bytes):
+def read_label(arr: enumerate[int], section: bytes):
     offset, value = next(arr)
     id = next(arr)[1]
-    field_0x8 = next(arr)[1]
+    code_offset = next(arr)[1]
     
     if value == 0xFFFFFFFF:
         name = read_string(section, offset + 6)
@@ -75,20 +75,23 @@ def read_unk(arr: enumerate[int], section: bytes):
         assert value == 0
         name = None
     
-    return ScriptUnk(name, id, field_0x8)
+    return Label(name, id, code_offset)
 
-def print_unk(unk: ScriptUnk) -> str:
-    return f"""      - name: {unk.name if unk.name != None else 'null'}
-        id: 0x{unk.id:x}
-        field_0x8: 0x{unk.field_0x8:x}\n"""
+def print_label(label: Label) -> str:
+    return f"""      - name: {label.name if label.name != None else 'null'}
+        id: 0x{label.id:x}
+        code_offset: 0x{label.code_offset:x}\n"""
 
 
 # script expressions
+class EndingSequence(Exception):
+    pass
+
 @dataclass
 class Expr:
-    elements: list[Var | int]
+    elements: list['Var | CallCmd | int']
 
-def read_expr(initial_element: int | None, arr: enumerate[int], symbol_ids: dict) -> Expr:
+def read_expr(initial_element: int | None, arr: enumerate[int], symbol_ids: dict, raise_on_ending_sequence = False) -> Expr:
     elements = []
     
     if initial_element is not None:
@@ -98,6 +101,13 @@ def read_expr(initial_element: int | None, arr: enumerate[int], symbol_ids: dict
         if value == 0x40:
             break
         
+        if value == 0x11 and raise_on_ending_sequence:
+            raise EndingSequence()
+        
+        if value == 0xc:
+            elements.append(read_call_cmd(arr, symbol_ids, 0xc, False))
+            continue
+        
         var = symbol_ids.get(value, value)
         elements.append(var)
     
@@ -106,7 +116,7 @@ def read_expr(initial_element: int | None, arr: enumerate[int], symbol_ids: dict
 def print_expr_or_var(value, braces_around_expression = False) -> str:
     match value:
         case Expr(elements):
-            content = ' '.join(print_expr_or_var(x) for x in elements)
+            content = ' '.join(print_expr_or_var(x, True) for x in elements)
             if braces_around_expression:
                 return f'( {content} )'
             else:
@@ -122,16 +132,24 @@ def print_expr_or_var(value, braces_around_expression = False) -> str:
                 return f"{category.name}:0x{id:x}"
         case FunctionImport(name) | FunctionDef(name):
             return f"fn:{name}"
-        case ScriptUnk(name, id):
+        case Label(name, id):
             if name is not None:
-                return f"unk:{name}"
+                return f"label:{name}"
             else:
-                return f"unk:{hex(id)}"
+                return f"label:{hex(id)}"
         case Table(name, id):
             if name is not None:
                 return f"table:{name}"
             else:
                 return f"table:{hex(id)}"
+        case CallCmd(is_const, func, args):
+            content = f"Call{'*' if is_const else ''} {func if isinstance(func, int) else func.name} ( {', '.join(print_expr_or_var(x) for x in args)} )"
+            if braces_around_expression:
+                return f'( {content} )'
+            else:
+                return content
+        case EndingSequence():
+            return 'AAAAAAAAAA'
         case int(n):
             return f"?0x{n:x}"
         case _:
@@ -234,6 +252,40 @@ def read_get_args_cmd(arr: enumerate[int], symbol_ids: dict, opcode: int, is_con
         
     return GetArgsCmd(func, args)
 
+# ??
+@dataclass
+class IfCmd:
+    condition: Expr
+    unused1: int
+    jump_to: int
+    unused2: int
+
+def read_if_cmd(arr: enumerate[int], symbol_ids: dict, opcode: int, is_const: bool) -> IfCmd:
+    condition = read_expr(None, arr, symbol_ids)
+    unused1 = next(arr)[1]
+    jump_to = next(arr)[1]
+    unused2 = next(arr)[1]
+    
+    return IfCmd(condition, unused1, jump_to, unused2)
+
+@dataclass
+class GotoLabelCmd:
+    label: Label | int
+
+def read_goto_label_cmd(arr: enumerate[int], symbol_ids: dict, opcode: int, is_const: bool) -> GotoLabelCmd:
+    label_int = next(arr)[1]
+    label = symbol_ids.get(label_int, label_int)
+    assert isinstance(label, Label) or isinstance(label, int)
+    
+    return GotoLabelCmd(label)
+
+@dataclass
+class NoopCmd:
+    opcode: int
+
+def read_noop_cmd(arr: enumerate[int], symbol_ids: dict, opcode: int, is_const: bool) -> NoopCmd:
+    return NoopCmd(opcode)
+
 # more known commands: Pop, Switch, Read[n], Write
 
 @dataclass
@@ -252,16 +304,26 @@ def read_unknown_cmd(arr: enumerate[int], symbol_ids: dict, opcode: int, is_cons
             var = symbol_ids.get(value, value)
             args.append(var)
         else:
-            args.append(read_expr(value, arr, symbol_ids))
+            try:
+                args.append(read_expr(value, arr, symbol_ids, True))
+            except EndingSequence:
+                args.append(EndingSequence())
+                break
     
     return UnknownCmd(opcode, is_const, args)
 
 INSTRUCTIONS = {
+    # TODO: some of the noops return 1, some 3, might be worth looking into
+    0x2: read_noop_cmd,
+    0x4: read_noop_cmd,
     0x5: read_get_args_cmd,
     0x9: read_pop_func_stack_cmd,
+    0xa: read_goto_label_cmd,
     0xc: read_call_cmd,
-    0x80: read_call_var_cmd,
+    0x18: read_if_cmd,
+    0x28: read_noop_cmd,
     0x3d: read_set_cmd,
+    0x80: read_call_var_cmd,
     # 0x29: read_switch,
 }
 
@@ -281,7 +343,7 @@ class FunctionDef:
     
     vars: list[Var]
     tables: list[Table]
-    unk: list[ScriptUnk]
+    unk: list[Label]
 
 def read_function_definitions(section: bytes, code_section: bytes, symbol_ids: dict) -> list[FunctionDef]:
     arr = enumerate(array('I', section))
@@ -326,7 +388,7 @@ def read_function_definitions(section: bytes, code_section: bytes, symbol_ids: d
         
         unk = []
         for _ in range(next(arr)[1]):
-            unk.append(read_unk(arr, section))
+            unk.append(read_label(arr, section))
         
         definitions.append(FunctionDef(name, id, is_public, field_0xc, field_0x30, field_0x34, code, None, variables, tables, unk))
     
@@ -365,9 +427,9 @@ def print_function_def(fn: FunctionDef) -> str:
         for table in fn.tables:
             result += print_table(table, 3)
     if fn.unk and len(fn.unk) > 0:
-        result += "    \n    unknown:\n"
+        result += "    \n    labels:\n"
         for var in fn.unk:
-            result += print_unk(var)
+            result += print_label(var)
     
     if fn.instructions and len(fn.instructions) > 0:
         result += "    \n    body:\n"
@@ -384,6 +446,12 @@ def print_function_def(fn: FunctionDef) -> str:
                     value = f"PopFuncStack"
                 case GetArgsCmd(func, args):
                     value = f"GetArgs self:{func.name} ( {', '.join(print_expr_or_var(x) for x in args)} )"
+                case IfCmd(condition, unused1, jump_to, unused2):
+                    value = f"If ( {print_expr_or_var(condition)}, {hex(unused1)}, {hex(jump_to)}, {hex(unused2)} )"
+                case GotoLabelCmd(label):
+                    value = f"GotoLabel {print_expr_or_var(label)}"
+                case NoopCmd(opcode):
+                    value = f"Noop_{hex(opcode)}"
                 case UnknownCmd(opcode, is_const, args):
                     value = f"Unk_0x{opcode:x}{'*' if is_const else ' '} ( {', '.join(print_expr_or_var(x) for x in args)} )"
                 case _:

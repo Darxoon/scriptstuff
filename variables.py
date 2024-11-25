@@ -7,12 +7,12 @@ from sys import argv
 
 class VarCategory(Enum):
     # script binary scope
-    Var1 = 0
+    Static = 0
     Const = 1
     Global = 2
     # function local
     Local = 3
-    Func = 4
+    FuncVar = 4
 
 def read_string(section: bytes, offset_words: int) -> str:
     buffer = section[offset_words * 4:]
@@ -127,9 +127,9 @@ def print_var(var: Var, indentation_level: int = 1) -> str:
 
 def write_variables(sections: list[bytes], symbol_ids: dict):
     # section 2
-    variables = read_variable_defs(sections[2], VarCategory.Var1)
+    variables = read_variable_defs(sections[2], VarCategory.Static)
     
-    var_str = 'variables:\n'
+    var_str = 'static_variables:\n'
     prev_status = None
     for var in variables:
         if prev_status != None and var.status != prev_status:

@@ -96,11 +96,11 @@ def read_expr(initial_element: int | None, arr: enumerate[int], symbol_ids: dict
     
     for _, value in arr:
         if value == 0x40:
-            break        
+            break
         
         if value == 0xc:
             elements.append(read_call_cmd(arr, symbol_ids, 0xc, False))
-            continue        
+            continue
         
         var = symbol_ids.get(value, value)
         elements.append(var)
@@ -358,7 +358,7 @@ def read_if_cmd(arr: enumerate[int], symbol_ids: dict, opcode: int, is_const: bo
     jump_to = next(arr)[1]
     unused2 = next(arr)[1]
     
-    return IfCmd(condition, unused1, jump_to, unused2)# ??
+    return IfCmd(condition, unused1, jump_to, unused2)
 
 @dataclass
 class ElseIfCmd:
@@ -706,9 +706,13 @@ INSTRUCTIONS = {
     # TODO: these are not noops, they probably have something to do with DoWhile
     # however they don't take any arguments
     0x3d: read_set_cmd,
-    0x67: read_get_next_array_entry_cmd,
-    0x68: read_get_array_entry_cmd,
-    0x69: read_copy_array_entry_cmd,
+    
+    # Array Instructions 
+    # These are WIP (and are inaccurate). I'll uncomment them once I'm certain they're correct.
+    #0x67: read_get_next_array_entry_cmd,
+    #0x68: read_get_array_entry_cmd,
+    #0x69: read_copy_array_entry_cmd,
+    
     0x80: read_call_var_cmd,
     # 0x29: read_switch,
 }

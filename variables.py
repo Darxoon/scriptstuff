@@ -170,5 +170,5 @@ def write_variables(sections: list[bytes], symbol_ids: dict):
         var = Var(None, f"{i:X}", VarCategory.Local, 0x10000100 | i, 0, 0, 0)
         symbol_ids[var.id] = var
     
-    with open(argv[1] + '.variables.yaml', 'w') as f:
+    with open(argv[1] + '.variables.yaml', 'w', encoding='utf-8') as f:
         f.write(var_str)

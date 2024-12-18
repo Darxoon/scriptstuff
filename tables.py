@@ -113,8 +113,6 @@ def print_table(table: Table, indentation_level: int = 1) -> str:
         text += "{indent}  values:\n"
         
         for i, val in enumerate(table.values):
-            if i % 3 == 0:
-                text += '\n'
             text += f"{indent}    {print_var(val) if isinstance(val, Var) else val}\n"
     return text
 

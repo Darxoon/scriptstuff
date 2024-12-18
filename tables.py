@@ -110,7 +110,7 @@ def print_table(table: Table, indentation_level: int = 1) -> str:
 {indent}  start_offset: 0x{table.start_offset:x}\n"""
 
     if not table.values is None:
-        text += "{indent}  values:\n"
+        text += f"{indent}  values:\n"
         
         for i, val in enumerate(table.values):
             text += f"{indent}    {print_var(val) if isinstance(val, Var) else val}\n"

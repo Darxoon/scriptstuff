@@ -1,6 +1,7 @@
 from array import array
 from dataclasses import dataclass
 from sys import argv
+from variables import Var, VarCategory
 
 def read_string(section: bytes, offset_words: int) -> str:
     buffer = section[offset_words * 4:]
@@ -12,16 +13,57 @@ def read_string(section: bytes, offset_words: int) -> str:
 class Table:
     name: str | None
     id: int
-    field_0x8: int
-    field_0xc: int
-    field_0x10: int
+    datatype: int
+    length: int
+    start_offset: int
+    datatype2: int
+    values: list[int]
+
+def read_table_values(section: bytearray, tables: list[Table], symbol_ids: dict) -> list[int]:
+    
+    for table in tables:
+        
+        # ?? 
+        table.datatype2 = array('I', section[table.start_offset * 4 : table.start_offset * 4 + 4])[0]
+        
+        start = (table.start_offset * 4) + 4
+        match table.datatype:
+            case 0x0: # constant
+                end = start + (table.length * 4)
+                section_slice = section[start : end]
+                arr = enumerate(array('I', section_slice))
+                for _, val in arr:
+                    val = symbol_ids.get(val, val)
+                    table.values.append(val)
+            case 0x1: # int
+                end = start + (table.length * 4)
+                section_slice = section[start : end]
+                arr = enumerate(array('I', section_slice))
+                for _, val in arr:
+                    table.values.append(val)
+            case 0x2: # float
+                end = start + (table.length * 4)
+                section_slice = section[start : end]
+                arr = enumerate(array('f', section_slice))
+                for _, val in arr:
+                    table.values.append(val)
+            case 0x3: # byte
+                end = start + table.length
+                section_slice = section[start : end]
+                arr = enumerate(array('B', section_slice))
+                for _, val in arr:
+                    table.values.append(val)
+            case _:
+                print(f"Unknown array data type {table.datatype} ...skipping this table's values!")
+                table.values = None
+    return tables
 
 def read_table(arr: enumerate[int], section: bytes):
     offset, value = next(arr)
     id = next(arr)[1]
-    field_0x8 = next(arr)[1]
-    field_0xc = next(arr)[1]
-    field_0x10 = next(arr)[1]
+    datatype = next(arr)[1]
+    length = next(arr)[1]
+    start_offset = next(arr)[1]
     
     if value == 0xFFFFFFFF:
         name = read_string(section, offset + 6)
@@ -32,9 +74,9 @@ def read_table(arr: enumerate[int], section: bytes):
         assert value == 0
         name = None
     
-    return Table(name, id, field_0x8, field_0xc, field_0x10)
+    return Table(name, id, datatype, length, start_offset, 0, [])
 
-def read_table_defs(section: bytes) -> list[Table]:
+def read_table_defs(section: bytes, code_section: bytes, symbol_ids: dict) -> list[Table]:
     arr = enumerate(array('I', section))
     
     count = next(arr)[1]
@@ -43,23 +85,44 @@ def read_table_defs(section: bytes) -> list[Table]:
     for _ in range(count):
         tables.append(read_table(arr, section))
     
+    tables = read_table_values(code_section, tables, symbol_ids)
+    
     assert next(arr, None) == None
     return tables
 
+def print_var(var: Var):
+    if var.name is not None:
+        return f"{var.category.name}:{var.name}"
+    elif var.alias is not None:
+        return f"{var.category.name}:{var.alias}"
+    elif var.category == VarCategory.Const and var.user_data is not None:
+        return f"{var.user_data}`" if isinstance(var.user_data, int) else repr(var.user_data)
+    else:
+        return f"{var.category.name}:0x{var.id:x}"
+
+
 def print_table(table: Table, indentation_level: int = 1) -> str:
     indent = '  ' * indentation_level
-    
-    return f"""{indent}- name: {table.name}
+    text = f"""{indent}- name: {table.name}
 {indent}  id: 0x{table.id:x}
-{indent}  field_0x8: 0x{table.field_0x8:x}
-{indent}  field_0xc: 0x{table.field_0xc:x}
-{indent}  field_0x10: 0x{table.field_0x10:x}\n"""
+{indent}  datatype: 0x{table.datatype:x}
+{indent}  length: 0x{table.length:x}
+{indent}  start_offset: 0x{table.start_offset:x}\n"""
+
+    if not table.values is None:
+        text += "{indent}  values:\n"
+        
+        for i, val in enumerate(table.values):
+            if i % 3 == 0:
+                text += '\n'
+            text += f"{indent}    {print_var(val) if isinstance(val, Var) else val}\n"
+    return text
 
 
 def write_tables(sections: list[bytes], symbol_ids: dict):
     # section 3
-    tables = read_table_defs(sections[3])
-    
+    tables = read_table_defs(sections[3], sections[7], symbol_ids)
+        
     for table in tables:
         symbol_ids[table.id] = table
     
@@ -67,5 +130,5 @@ def write_tables(sections: list[bytes], symbol_ids: dict):
     for table in tables:
         out_str += print_table(table)
     
-    with open(argv[1] + '.tables.yaml', 'w') as f:
+    with open(argv[1] + '.tables.yaml', 'w', encoding='utf-8') as f:
         f.write(out_str)

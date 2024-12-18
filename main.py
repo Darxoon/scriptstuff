@@ -41,7 +41,28 @@ def main():
     with open(argv[1], 'rb') as f:
         input_file = f.read()
     
-    symbol_ids = {}
+    # predefined symbol ids for expressions (incomplete)
+    symbol_ids = {
+    0x3f: 'next_function',
+   #0x40: exit,
+    0x41: '(',
+    0x42: ')',
+    0x44: '&&',
+    0x4a: '==',
+    
+    # I'm not sure whether these are correct, but I've left them in as comments. 
+    
+    #0x4b: '!=',
+    #0x4c: '>',
+    #0x4d: '<',
+    #0x4e: '>=',
+    #0x4f: '<=',
+    
+    0x53: '+',
+    0x54: '-',
+    0x55: '*',
+    0x56: '/',
+    }
     sections = read_ksm_container(input_file)
     
     write_variables(sections, symbol_ids)

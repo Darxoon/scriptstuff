@@ -47,16 +47,15 @@ def main():
    #0x40: exit,
     0x41: '(',
     0x42: ')',
+    0x43: '||',
     0x44: '&&',
+    
     0x4a: '==',
-    
-    # I'm not sure whether these are correct, but I've left them in as comments. 
-    
-    #0x4b: '!=',
-    #0x4c: '>',
-    #0x4d: '<',
-    #0x4e: '>=',
-    #0x4f: '<=',
+    0x4b: '!=',
+    0x4c: '>',
+    0x4d: '<',
+    0x4e: '>=',
+    0x4f: '<=',
     
     0x53: '+',
     0x54: '-',

@@ -215,6 +215,31 @@ def read_call_threaded_cmd(arr: enumerate[int], symbol_ids: dict, opcode: int, i
     
     return CallThreadedCmd(is_const, func, args)
 
+#???
+@dataclass
+class CallThreaded2Cmd:
+    is_const: bool
+    func: 'FunctionImport | FunctionDef | int'
+    args: list[Expr | Var | int]
+
+def read_call_threaded2_cmd(arr: enumerate[int], symbol_ids: dict, opcode: int, is_const: bool) -> CallCmd:
+    func_int = next(arr)[1]
+    func = symbol_ids.get(func_int, func_int)
+    assert isinstance(func, FunctionImport) or isinstance(func, FunctionDef) or isinstance(func, int)
+    
+    args = []
+    for _, value in arr:
+        if value == 0x11:
+            break
+        
+        if is_const:
+            var = symbol_ids.get(value, value)
+            args.append(var)
+        else:
+            args.append(read_expr(value, arr, symbol_ids))
+    
+    return CallThreaded2Cmd(is_const, func, args)
+
 @dataclass 
 class CallVarCmd:
     is_const: bool
@@ -253,7 +278,7 @@ def read_set_cmd(arr: enumerate[int], symbol_ids: dict, opcode: int, is_const: b
     if is_const:
         value_int = next(arr)[1]
         value = symbol_ids.get(value_int, value_int)
-        #assert isinstance(value, Var) or isinstance(value, int)
+        assert isinstance(value, Var) or isinstance(value, int)
         if value == 0x40:
             value = Expr([])
     else:
@@ -262,25 +287,26 @@ def read_set_cmd(arr: enumerate[int], symbol_ids: dict, opcode: int, is_const: b
     return SetCmd(is_const, destination, value)
 
 @dataclass
-class GetNextArrayEntryCmd:
+class ReadTableLengthCmd:
     is_const: bool
     arrayt: Table
 
-def read_get_next_array_entry_cmd(arr: enumerate[int], symbol_ids: dict, opcode: int, is_const: bool) -> GetNextArrayEntryCmd:
+def read_read_table_length_cmd(arr: enumerate[int], symbol_ids: dict, opcode: int, is_const: bool) -> ReadTableLengthCmd:
     assert not is_const
     
     arrayt_int = next(arr)[1]
     arrayt = symbol_ids.get(arrayt_int, arrayt_int)
     
-    return GetNextArrayEntryCmd(is_const, arrayt)
+    return ReadTableLengthCmd(is_const, arrayt)
 
+# returns the value to FuncVar0 by default (but other variables can be set to whatever it returns directly)
 @dataclass
-class GetArrayEntryCmd:
+class ReadTableEntryCmd:
     is_const: bool
     arrayt: Table
     index: Expr | Var | int
 
-def read_get_array_entry_cmd(arr: enumerate[int], symbol_ids: dict, opcode: int, is_const: bool) -> GetArrayEntryCmd:
+def read_read_table_entry_cmd(arr: enumerate[int], symbol_ids: dict, opcode: int, is_const: bool) -> ReadTableEntryCmd:
     assert not is_const
     
     arrayt_int = next(arr)[1]
@@ -288,16 +314,20 @@ def read_get_array_entry_cmd(arr: enumerate[int], symbol_ids: dict, opcode: int,
     index_int = next(arr)[1]
     index = symbol_ids.get(index_int, index_int)
     
-    return GetArrayEntryCmd(is_const, arrayt, index)
+    return ReadTableEntryCmd(is_const, arrayt, index)
 
+# this is just like ReadTableEntryCmd, 
+# but the variable that the value returned to is specified in the parameters of this instruction
+# instead of being determined by a SetCmd directly before it
+# so ReadTableEntryToVarCmd and ReadTableEntryCmd are used interchangably
 @dataclass
-class CopyArrayEntryCmd:
+class ReadTableEntryToVarCmd:
     is_const: bool
     arrayt: Table
     index: Expr | Var | int
     var: Var
 
-def read_copy_array_entry_cmd(arr: enumerate[int], symbol_ids: dict, opcode: int, is_const: bool) -> SetCmd:
+def read_read_table_entry_to_var_cmd(arr: enumerate[int], symbol_ids: dict, opcode: int, is_const: bool) -> SetCmd:
     assert not is_const
     
     arrayt_int = next(arr)[1]
@@ -305,10 +335,62 @@ def read_copy_array_entry_cmd(arr: enumerate[int], symbol_ids: dict, opcode: int
     index_int = next(arr)[1]
     index = symbol_ids.get(index_int, index_int)    
     var_int = next(arr)[1]
-    var = symbol_ids.get(index_int, index_int)
+    var = symbol_ids.get(var_int, var_int)
     assert isinstance(var, Var)
     
-    return CopyArrayEntryCmd(is_const, arrayt, index, var)
+    return ReadTableEntryToVarCmd(is_const, arrayt, index, var)
+
+# read 3 entries starting from the specified index and save those values to 3 specified variables. 
+# Used to read 3d vector values without having to call ReadTableEntryCmds 3 times.
+@dataclass
+class ReadTableEntriesVec3Cmd:
+    is_const: bool
+    arrayt: Table
+    index: Expr | Var | int
+    x: Var
+    y: Var
+    z: Var
+
+def read_read_table_entries_vec3_cmd(arr: enumerate[int], symbol_ids: dict, opcode: int, is_const: bool) -> SetCmd:
+    assert not is_const
+    
+    arrayt_int = next(arr)[1]
+    arrayt = symbol_ids.get(arrayt_int, arrayt_int)
+    index_int = next(arr)[1]
+    index = symbol_ids.get(index_int, index_int)    
+    
+    x_int = next(arr)[1]
+    x = symbol_ids.get(x_int, x_int)
+    y_int = next(arr)[1]
+    y = symbol_ids.get(y_int, y_int)
+    z_int = next(arr)[1]
+    z = symbol_ids.get(z_int,z_int)
+    
+    assert isinstance(x, Var)
+    assert isinstance(y, Var)
+    assert isinstance(z, Var)
+    
+    return ReadTableEntriesVec3Cmd(is_const, arrayt, index, x, y, z)
+
+@dataclass
+class TableGetIndexCmd:
+    is_const: bool
+    arrayt: Table
+    occurance: Expr | Var | int
+    var: Var
+
+def read_table_get_index_cmd(arr: enumerate[int], symbol_ids: dict, opcode: int, is_const: bool) -> TableGetIndexCmd:
+    assert not is_const
+    
+    arrayt_int = next(arr)[1]
+    arrayt = symbol_ids.get(arrayt_int, arrayt_int)
+    occurance_int = next(arr)[1]
+    occurance = symbol_ids.get(occurance_int, occurance_int)    
+    var_int = next(arr)[1]
+    var = symbol_ids.get(var_int, var_int)
+    assert isinstance(var, Var)
+    
+    return TableGetIndexCmd(is_const, arrayt, occurance, var)
 
 @dataclass
 class ReturnCmd:
@@ -359,6 +441,42 @@ def read_if_cmd(arr: enumerate[int], symbol_ids: dict, opcode: int, is_const: bo
     unused2 = next(arr)[1]
     
     return IfCmd(condition, unused1, jump_to, unused2)
+
+# these appear in Script/Map/MAC/mac_1_30.bin
+# TODO: Find other use cases to confirm whether these are what they appear to be.
+@dataclass
+class IfEqualCmd:
+    var1: Expr | Var | int
+    var2: Expr | Var | int
+    jump_to: int
+
+def read_ifequal_cmd(arr: enumerate[int], symbol_ids: dict, opcode: int, is_const: bool) -> IfEqualCmd:
+    assert not is_const
+    
+    var1_int = next(arr)[1]
+    var1 = symbol_ids.get(var1_int, var1_int)
+    var2_int = next(arr)[1]
+    var2 = symbol_ids.get(var2_int, var2_int)
+    jump_to = next(arr)[1]
+    
+    return IfEqualCmd(var1, var2, jump_to)
+
+@dataclass
+class IfNotEqualCmd:
+    var1: Expr | Var | int
+    var2: Expr | Var | int
+    jump_to: int
+
+def read_ifnotequal_cmd(arr: enumerate[int], symbol_ids: dict, opcode: int, is_const: bool) -> IfNotEqualCmd:
+    assert not is_const
+    
+    var1_int = next(arr)[1]
+    var1 = symbol_ids.get(var1_int, var1_int)
+    var2_int = next(arr)[1]
+    var2 = symbol_ids.get(var2_int, var2_int)
+    jump_to = next(arr)[1]
+    
+    return IfNotEqualCmd(var1, var2, jump_to)
 
 @dataclass
 class ElseIfCmd:
@@ -413,6 +531,15 @@ def read_noop_cmd(arr: enumerate[int], symbol_ids: dict, opcode: int, is_const: 
     assert not is_const
     
     return NoopCmd(opcode)
+
+@dataclass
+class LabelCmd:
+    opcode: int
+
+def read_label_cmd(arr: enumerate[int], symbol_ids: dict, opcode: int, is_const: bool) -> LabelCmd:
+    assert not is_const
+    
+    return LabelCmd(opcode)
 
 # TODO: Find out if the endif and endswitch commands are strictly necessary for the code to run.
 @dataclass
@@ -680,7 +807,7 @@ INSTRUCTIONS = {
     # TODO: some of the noops return 1, some 3, might be worth looking into
     0x2: read_noop_cmd,
     0x3: read_returnval_cmd,
-    0x4: read_noop_cmd,
+    0x4: read_label_cmd,
     0x5: read_get_args_cmd,
     0x6: read_thread_cmd,
     0x7: read_thread2_cmd,
@@ -688,10 +815,18 @@ INSTRUCTIONS = {
     0xa: read_goto_label_cmd,
     0xc: read_call_cmd,
     0xd: read_call_threaded_cmd,
+    #TODO: Figure out what this could be, it's definitely similar to CallThreaded but how it's different isn't clear
+    #0xe: read_call_threaded2_cmd,
     0x12: read_checkval_cmd,
     0x16: read_wait_cmd,
     0x17: read_wait2_cmd,
     0x18: read_if_cmd,
+    
+    # Unusual If Instructions (experimental)
+    #0x19: read_ifequal_cmd,
+    #0x1d: read_ifnotequal_cmd,
+    
+    # Switch, Case Instructions
     0x26: read_else_cmd,
     0x27: read_else_if_cmd,
     0x28: read_endif_cmd,
@@ -700,18 +835,24 @@ INSTRUCTIONS = {
     0x30: read_case_range_cmd,
     0x37: read_breakswitch_cmd,
     0x38: read_endswitch_cmd,
+    
+    # DoWhile Instructions
     0x39: read_dowhile_cmd,
     0x3a: read_break_cmd,
     0x3c: read_enddowhile_cmd,
-    # TODO: these are not noops, they probably have something to do with DoWhile
-    # however they don't take any arguments
+    
     0x3d: read_set_cmd,
     
     # Array Instructions 
-    # These are WIP (and are inaccurate). I'll uncomment them once I'm certain they're correct.
-    #0x67: read_get_next_array_entry_cmd,
-    #0x68: read_get_array_entry_cmd,
-    #0x69: read_copy_array_entry_cmd,
+    0x67: read_read_table_length_cmd,
+    0x68: read_read_table_entry_cmd,
+    0x69: read_read_table_entry_to_var_cmd,
+    0x6b: read_read_table_entries_vec3_cmd,
+    0x6d: read_table_get_index_cmd,
+    
+    # TODO: are these noops?
+    0x7c: read_noop_cmd,
+    0x7d: read_noop_cmd,
     
     0x80: read_call_var_cmd,
     # 0x29: read_switch,
@@ -851,9 +992,11 @@ def print_function_def(fn: FunctionDef) -> str:
                 case CallCmd(is_const, func, args):
                     value = f"Call{'*' if is_const else ' '} {func if isinstance(func, int) else func.name} ( {', '.join(print_expr_or_var(x) for x in args)} )"
                 case CallThreadedCmd(is_const, func, args):
-                    value = f"Call2{'*' if is_const else ' '} {func if isinstance(func, int) else func.name} ( {', '.join(print_expr_or_var(x) for x in args)} )"
+                    value = f"CallAsThread{'*' if is_const else ' '} {func if isinstance(func, int) else func.name} ( {', '.join(print_expr_or_var(x) for x in args)} )"
+                case CallThreaded2Cmd(is_const, func, args):
+                    value = f"CallAsThread2{'*' if is_const else ' '} {func if isinstance(func, int) else func.name} ( {', '.join(print_expr_or_var(x) for x in args)} )"
                 case CallVarCmd(is_const, func, args):
-                    value = f"Call{'*' if is_const else '' } {func if isinstance(func, int) else func.name} {args}"
+                    value = f"CallVar{'*' if is_const else '' } {func if isinstance(func, int) else func.name} {args}"
                 case ReturnCmd():
                     if indentation > 0:
                         indentation -= 1
@@ -864,6 +1007,12 @@ def print_function_def(fn: FunctionDef) -> str:
                 case IfCmd(condition, unused1, jump_to, unused2):
                     start_indented_block = True
                     value = f"If ( {print_expr_or_var(condition)}, {hex(unused1)}, {hex(jump_to)}, {hex(unused2)} )"
+                case IfEqualCmd(var1, var2, jump_to):
+                    start_indented_block = True
+                    value = f"IfEqual ( {print_expr_or_var(var1)}, {print_expr_or_var(var2)}, {hex(jump_to)} )"
+                case IfNotEqualCmd(var1, var2, jump_to):
+                    start_indented_block = True
+                    value = f"IfNotEqual ( {print_expr_or_var(var1)}, {print_expr_or_var(var2)}, {hex(jump_to)} )"
                 case ElseCmd(jump_to):
                     if indentation > 0:
                         indentation -= 1
@@ -882,6 +1031,8 @@ def print_function_def(fn: FunctionDef) -> str:
                     value = f"GotoLabel {print_expr_or_var(label)}"
                 case NoopCmd(opcode):
                     value = f"Noop_{hex(opcode)}"
+                case LabelCmd(opcode):
+                    value = f"LabelPoint"
                 case ThreadCmd(func, take_args, give_args):
                     start_indented_block = True
                     value = f"Thread1 {print_expr_or_var(func)} Get ( {', '.join(print_expr_or_var(x) for x in take_args)} ) Give ( {', '.join(print_expr_or_var(x) for x in give_args)} )"
@@ -925,12 +1076,16 @@ def print_function_def(fn: FunctionDef) -> str:
                     if indentation > 0:
                         indentation -= 1
                     value = f"EndDoWhile"
-                case GetNextArrayEntryCmd(is_const, arrayt):
-                    value = f"GetNextArrayEntry ( {print_expr_or_var(arrayt)} )"
-                case GetArrayEntryCmd(is_const, arrayt, index):
-                    value = f"GetArrayEntry ( {print_expr_or_var(arrayt)}, {print_expr_or_var(index)} )"
-                case CopyArrayEntryCmd(is_const, arrayt, index, var):
-                    value = f"CopyArrayEntry ( {print_expr_or_var(arrayt)}, {print_expr_or_var(index)}, {print_expr_or_var(var)} )"
+                case ReadTableLengthCmd(is_const, arrayt):
+                    value = f"ReadTableLength ( {print_expr_or_var(arrayt)} )"
+                case ReadTableEntryCmd(is_const, arrayt, index):
+                    value = f"ReadTableEntry ( {print_expr_or_var(arrayt)}, {print_expr_or_var(index)} )"
+                case ReadTableEntryToVarCmd(is_const, arrayt, index, var):
+                    value = f"ReadTableEntryToVar ( {print_expr_or_var(arrayt)}, {print_expr_or_var(index)}, {print_expr_or_var(var)} )"
+                case ReadTableEntriesVec3Cmd(is_const, arrayt, index, x, y, z):
+                    value = f"ReadTableEntriesVec3 ( {print_expr_or_var(arrayt)}, {print_expr_or_var(index)}, {print_expr_or_var(x)}, {print_expr_or_var(y)}, {print_expr_or_var(z)} )"
+                case TableGetIndexCmd(is_const, arrayt, occurance, var):
+                    value = f"TableGetIndex ( {print_expr_or_var(arrayt)}, {print_expr_or_var(occurance)}, {print_expr_or_var(var)} )"
                 case UnknownCmd(opcode, is_const, args):
                     value = f"Unk_0x{opcode:x}{'*' if is_const else ' '} ( {', '.join(print_expr_or_var(x) for x in args)} )"
                 case _:

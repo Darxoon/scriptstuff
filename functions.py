@@ -340,8 +340,36 @@ def read_read_table_entry_to_var_cmd(arr: enumerate[int], symbol_ids: dict, opco
     
     return ReadTableEntryToVarCmd(is_const, arrayt, index, var)
 
+# read 2 entries starting from the specified index and save those values to 2 specified variables. 
+# Used to read 2d vector values without having to call ReadTableEntry 2 times.
+@dataclass
+class ReadTableEntriesVec2Cmd:
+    is_const: bool
+    arrayt: Table
+    index: Expr | Var | int
+    x: Var
+    y: Var
+
+def read_read_table_entries_vec2_cmd(arr: enumerate[int], symbol_ids: dict, opcode: int, is_const: bool) -> ReadTableEntriesVec2Cmd:
+    assert not is_const
+    
+    arrayt_int = next(arr)[1]
+    arrayt = symbol_ids.get(arrayt_int, arrayt_int)
+    index_int = next(arr)[1]
+    index = symbol_ids.get(index_int, index_int)    
+    
+    x_int = next(arr)[1]
+    x = symbol_ids.get(x_int, x_int)
+    y_int = next(arr)[1]
+    y = symbol_ids.get(y_int, y_int)
+    
+    assert isinstance(x, Var)
+    assert isinstance(y, Var)
+    
+    return ReadTableEntriesVec2Cmd(is_const, arrayt, index, x, y)
+
 # read 3 entries starting from the specified index and save those values to 3 specified variables. 
-# Used to read 3d vector values without having to call ReadTableEntryCmds 3 times.
+# Used to read 3d vector values without having to call ReadTableEntry 3 times.
 @dataclass
 class ReadTableEntriesVec3Cmd:
     is_const: bool
@@ -351,7 +379,7 @@ class ReadTableEntriesVec3Cmd:
     y: Var
     z: Var
 
-def read_read_table_entries_vec3_cmd(arr: enumerate[int], symbol_ids: dict, opcode: int, is_const: bool) -> SetCmd:
+def read_read_table_entries_vec3_cmd(arr: enumerate[int], symbol_ids: dict, opcode: int, is_const: bool) -> ReadTableEntriesVec3Cmd:
     assert not is_const
     
     arrayt_int = next(arr)[1]
@@ -371,7 +399,6 @@ def read_read_table_entries_vec3_cmd(arr: enumerate[int], symbol_ids: dict, opco
     assert isinstance(z, Var)
     
     return ReadTableEntriesVec3Cmd(is_const, arrayt, index, x, y, z)
-
 @dataclass
 class TableGetIndexCmd:
     is_const: bool
@@ -847,6 +874,7 @@ INSTRUCTIONS = {
     0x67: read_read_table_length_cmd,
     0x68: read_read_table_entry_cmd,
     0x69: read_read_table_entry_to_var_cmd,
+    0x6a: read_read_table_entries_vec2_cmd,
     0x6b: read_read_table_entries_vec3_cmd,
     0x6d: read_table_get_index_cmd,
     
@@ -1082,6 +1110,8 @@ def print_function_def(fn: FunctionDef) -> str:
                     value = f"ReadTableEntry ( {print_expr_or_var(arrayt)}, {print_expr_or_var(index)} )"
                 case ReadTableEntryToVarCmd(is_const, arrayt, index, var):
                     value = f"ReadTableEntryToVar ( {print_expr_or_var(arrayt)}, {print_expr_or_var(index)}, {print_expr_or_var(var)} )"
+                case ReadTableEntriesVec2Cmd(is_const, arrayt, index, x, y):
+                    value = f"ReadTableEntriesVec2 ( {print_expr_or_var(arrayt)}, {print_expr_or_var(index)}, {print_expr_or_var(x)}, {print_expr_or_var(y)} )"
                 case ReadTableEntriesVec3Cmd(is_const, arrayt, index, x, y, z):
                     value = f"ReadTableEntriesVec3 ( {print_expr_or_var(arrayt)}, {print_expr_or_var(index)}, {print_expr_or_var(x)}, {print_expr_or_var(y)}, {print_expr_or_var(z)} )"
                 case TableGetIndexCmd(is_const, arrayt, occurance, var):

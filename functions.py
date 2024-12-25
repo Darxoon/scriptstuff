@@ -197,7 +197,7 @@ class CallThreadedCmd:
     func: 'FunctionImport | FunctionDef | int'
     args: list[Expr | Var | int]
 
-def read_call_threaded_cmd(arr: enumerate[int], symbol_ids: dict, opcode: int, is_const: bool) -> CallCmd:
+def read_call_threaded_cmd(arr: enumerate[int], symbol_ids: dict, opcode: int, is_const: bool) -> CallThreadedCmd:
     func_int = next(arr)[1]
     func = symbol_ids.get(func_int, func_int)
     assert isinstance(func, FunctionImport) or isinstance(func, FunctionDef) or isinstance(func, int)
@@ -222,7 +222,7 @@ class CallThreaded2Cmd:
     func: 'FunctionImport | FunctionDef | int'
     args: list[Expr | Var | int]
 
-def read_call_threaded2_cmd(arr: enumerate[int], symbol_ids: dict, opcode: int, is_const: bool) -> CallCmd:
+def read_call_threaded2_cmd(arr: enumerate[int], symbol_ids: dict, opcode: int, is_const: bool) -> CallThreaded2Cmd:
     func_int = next(arr)[1]
     func = symbol_ids.get(func_int, func_int)
     assert isinstance(func, FunctionImport) or isinstance(func, FunctionDef) or isinstance(func, int)
@@ -327,7 +327,7 @@ class ReadTableEntryToVarCmd:
     index: Expr | Var | int
     var: Var
 
-def read_read_table_entry_to_var_cmd(arr: enumerate[int], symbol_ids: dict, opcode: int, is_const: bool) -> SetCmd:
+def read_read_table_entry_to_var_cmd(arr: enumerate[int], symbol_ids: dict, opcode: int, is_const: bool) -> ReadTableEntryToVarCmd:
     assert not is_const
     
     arrayt_int = next(arr)[1]
@@ -514,7 +514,7 @@ class ElseIfCmd:
     jump_to: int
     unused3: int
 
-def read_else_if_cmd(arr: enumerate[int], symbol_ids: dict, opcode: int, is_const: bool) -> IfCmd:
+def read_else_if_cmd(arr: enumerate[int], symbol_ids: dict, opcode: int, is_const: bool) -> ElseIfCmd:
     assert not is_const
     
     start_from = next(arr)[1]
@@ -530,7 +530,7 @@ def read_else_if_cmd(arr: enumerate[int], symbol_ids: dict, opcode: int, is_cons
 class ElseCmd:
     jump_to: int
 
-def read_else_cmd(arr: enumerate[int], symbol_ids: dict, opcode: int, is_const: bool) -> IfCmd:
+def read_else_cmd(arr: enumerate[int], symbol_ids: dict, opcode: int, is_const: bool) -> ElseCmd:
     assert not is_const
     
     jump_to = next(arr)[1]

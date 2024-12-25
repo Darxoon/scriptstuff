@@ -83,6 +83,7 @@ VAR_STATUS_NAMES = {
     3: 'String',
     4: 'Alloc',
     5: 'UserVar',
+    8: 'Func',
     0xd: 'QueuedFree',
     0xe: 'Uninitialized',
 }

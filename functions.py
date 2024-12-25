@@ -192,12 +192,12 @@ def read_call_cmd(arr: enumerate[int], symbol_ids: dict, opcode: int, is_const: 
     return CallCmd(is_const, func, args)
 
 @dataclass
-class CallThreadedCmd:
+class CallAsThreadCmd:
     is_const: bool
     func: 'FunctionImport | FunctionDef | int'
     args: list[Expr | Var | int]
 
-def read_call_threaded_cmd(arr: enumerate[int], symbol_ids: dict, opcode: int, is_const: bool) -> CallThreadedCmd:
+def read_call_as_thread_cmd(arr: enumerate[int], symbol_ids: dict, opcode: int, is_const: bool) -> CallAsThreadCmd:
     func_int = next(arr)[1]
     func = symbol_ids.get(func_int, func_int)
     assert isinstance(func, FunctionImport) or isinstance(func, FunctionDef) or isinstance(func, int)
@@ -213,16 +213,18 @@ def read_call_threaded_cmd(arr: enumerate[int], symbol_ids: dict, opcode: int, i
         else:
             args.append(read_expr(value, arr, symbol_ids))
     
-    return CallThreadedCmd(is_const, func, args)
+    return CallAsThreadCmd(is_const, func, args)
 
-#???
+# Same as CallAsThread but sets the original thread as the new thread's parent
+# This might mean that the parent thread waits for the child to be done before it continues
+# TODO: But idk if that's true
 @dataclass
-class CallThreaded2Cmd:
+class CallAsChildThreadCmd:
     is_const: bool
     func: 'FunctionImport | FunctionDef | int'
     args: list[Expr | Var | int]
 
-def read_call_threaded2_cmd(arr: enumerate[int], symbol_ids: dict, opcode: int, is_const: bool) -> CallThreaded2Cmd:
+def read_call_as_child_thread_cmd(arr: enumerate[int], symbol_ids: dict, opcode: int, is_const: bool) -> CallAsChildThreadCmd:
     func_int = next(arr)[1]
     func = symbol_ids.get(func_int, func_int)
     assert isinstance(func, FunctionImport) or isinstance(func, FunctionDef) or isinstance(func, int)
@@ -238,7 +240,7 @@ def read_call_threaded2_cmd(arr: enumerate[int], symbol_ids: dict, opcode: int, 
         else:
             args.append(read_expr(value, arr, symbol_ids))
     
-    return CallThreaded2Cmd(is_const, func, args)
+    return CallAsChildThreadCmd(is_const, func, args)
 
 @dataclass 
 class CallVarCmd:
@@ -248,7 +250,7 @@ class CallVarCmd:
 
 def read_call_var_cmd(arr: enumerate[int], symbol_ids: dict, opcode: int, is_const: bool) -> CallVarCmd:
     func_int = next(arr)[1]
-    func = symbol_ids[func_int, func_int]
+    func = symbol_ids.get(func_int, func_int)
     assert isinstance(func, Var) or isinstance(func, int)
     
     args = []
@@ -423,7 +425,7 @@ def read_table_get_index_cmd(arr: enumerate[int], symbol_ids: dict, opcode: int,
 class ReturnCmd:
     pass
 
-def read_pop_func_stack_cmd(arr: enumerate[int], symbol_ids: dict, opcode: int, is_const: bool) -> ReturnCmd:
+def read_return_cmd(arr: enumerate[int], symbol_ids: dict, opcode: int, is_const: bool) -> ReturnCmd:
     assert not is_const
     
     return ReturnCmd()
@@ -642,20 +644,18 @@ def read_thread2_cmd(arr: enumerate[int], symbol_ids: dict, opcode: int, is_cons
         
     return Thread2Cmd(func, take_args, give_args)
 
-# Really stumped on this one. It just takes one value. I've just added this definition because it can otherwise really mess up the formatting
-# It doesn't return a value either, so it might change the value in place
 @dataclass
-class CheckValCmd:
+class DeleteRuntimeCmd:
     is_const: bool
     var: Expr | Var | int
 
-def read_checkval_cmd(arr: enumerate[int], symbol_ids: dict, opcode: int, is_const: bool) -> CheckValCmd:
+def read_delete_runtime_cmd(arr: enumerate[int], symbol_ids: dict, opcode: int, is_const: bool) -> DeleteRuntimeCmd:
     var_int = next(arr)[1]
     var = symbol_ids.get(var_int, var_int)
     if is_const:
         assert isinstance(var, Var) or isinstance(var, int)
     
-    return CheckValCmd(is_const, var)
+    return DeleteRuntimeCmd(is_const, var)
 
 @dataclass
 class WaitCmd:
@@ -838,13 +838,12 @@ INSTRUCTIONS = {
     0x5: read_get_args_cmd,
     0x6: read_thread_cmd,
     0x7: read_thread2_cmd,
-    0x9: read_pop_func_stack_cmd,
+    0x9: read_return_cmd,
     0xa: read_goto_label_cmd,
     0xc: read_call_cmd,
-    0xd: read_call_threaded_cmd,
-    #TODO: Figure out what this could be, it's definitely similar to CallThreaded but how it's different isn't clear
-    #0xe: read_call_threaded2_cmd,
-    0x12: read_checkval_cmd,
+    0xd: read_call_as_thread_cmd,
+    0xe: read_call_as_child_thread_cmd,
+    0x12: read_delete_runtime_cmd,
     0x16: read_wait_cmd,
     0x17: read_wait2_cmd,
     0x18: read_if_cmd,
@@ -883,7 +882,8 @@ INSTRUCTIONS = {
     0x7d: read_noop_cmd,
     
     0x80: read_call_var_cmd,
-    # 0x29: read_switch,
+    # 0x81: read_call_var_as_thread,
+    # 0x82: read_call_var_as_child_thread,
 }
 
 
@@ -900,9 +900,9 @@ class FunctionDef:
     code: array
     instructions: list | None
     
-    vars: list
-    tables: list
-    unk: list
+    vars: list[Var]
+    tables: list[Table]
+    unk: list[Label]
     
     # analysis
     thread_references: list['FunctionDef'] # TODO: do this for Thread2 too
@@ -943,7 +943,8 @@ def read_function_definitions(section: bytes, code_section: bytes, symbol_ids: d
                 var.alias = str((var.id >> 8) & 0xFF) # TODO: make this more exact
             
             variables.append(var)
-            
+        
+        # TODO: table values don't work yet here
         tables = []
         for _ in range(next(arr)[1]):
             tables.append(read_table(arr, section))
@@ -1019,10 +1020,10 @@ def print_function_def(fn: FunctionDef) -> str:
                     value = f"Set{'*' if is_const else ' '} {print_expr_or_var(destination)} {print_expr_or_var(source, True)}"
                 case CallCmd(is_const, func, args):
                     value = f"Call{'*' if is_const else ' '} {func if isinstance(func, int) else func.name} ( {', '.join(print_expr_or_var(x) for x in args)} )"
-                case CallThreadedCmd(is_const, func, args):
+                case CallAsThreadCmd(is_const, func, args):
                     value = f"CallAsThread{'*' if is_const else ' '} {func if isinstance(func, int) else func.name} ( {', '.join(print_expr_or_var(x) for x in args)} )"
-                case CallThreaded2Cmd(is_const, func, args):
-                    value = f"CallAsThread2{'*' if is_const else ' '} {func if isinstance(func, int) else func.name} ( {', '.join(print_expr_or_var(x) for x in args)} )"
+                case CallAsChildThreadCmd(is_const, func, args):
+                    value = f"CallAsChildThread{'*' if is_const else ' '} {func if isinstance(func, int) else func.name} ( {', '.join(print_expr_or_var(x) for x in args)} )"
                 case CallVarCmd(is_const, func, args):
                     value = f"CallVar{'*' if is_const else '' } {func if isinstance(func, int) else func.name} {args}"
                 case ReturnCmd():
@@ -1067,8 +1068,8 @@ def print_function_def(fn: FunctionDef) -> str:
                 case Thread2Cmd(func, take_args, give_args):
                     start_indented_block = True
                     value = f"Thread2 {print_expr_or_var(func)} Get ( {', '.join(print_expr_or_var(x) for x in take_args)} ) Give ( {', '.join(print_expr_or_var(x) for x in give_args)} )"
-                case CheckValCmd(is_const, duration):
-                    value = f"CheckVal{'*' if is_const else '' } {print_expr_or_var(duration)}"                
+                case DeleteRuntimeCmd(is_const, duration):
+                    value = f"DeleteRuntime{'*' if is_const else '' } {print_expr_or_var(duration)}"                
                 case WaitCmd(is_const, duration):
                     value = f"Wait{'*' if is_const else '' } {print_expr_or_var(duration)}"
                 case Wait2Cmd(is_const, duration):

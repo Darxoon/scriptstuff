@@ -121,7 +121,7 @@ def print_expr_or_var(value, braces_around_expression = False) -> str:
             elif alias is not None:
                 return f"{category.name}:{alias}"
             elif category == VarCategory.Const and user_data is not None:
-                return f"{user_data}`" if isinstance(user_data, int) else repr(user_data)
+                return f"{user_data}`" if isinstance(user_data, (int, float)) else repr(user_data)
             else:
                 return f"{category.name}:0x{id:x}"
         case FunctionImport(name) | FunctionDef(name):

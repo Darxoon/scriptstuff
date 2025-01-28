@@ -1,5 +1,6 @@
 from array import array
 from dataclasses import dataclass
+from enum import Enum
 from sys import argv
 from util import SymbolIds
 from variables import Var, VarCategory
@@ -10,60 +11,67 @@ def read_string(section: bytes, offset_words: int) -> str:
     return str(buffer[:bytelen], 'utf-8')
 
 
+class TableDataType(Enum):
+    Var = 0
+    Int = 1
+    Float = 2
+    Byte = 3
+
 @dataclass
 class Table:
     name: str | None
     id: int
-    datatype: int
+    data_type: TableDataType
     length: int
     start_offset: int
     datatype2: int
     values: list
 
-def read_table_values(section: bytearray, tables: list[Table], symbol_ids: SymbolIds) -> list[Table]:
+def read_table_values(section: bytes, tables: list[Table], symbol_ids: SymbolIds) -> list[Table]:
     for table in tables:
         # ?? 
         table.datatype2 = array('I', section[table.start_offset * 4 : table.start_offset * 4 + 4])[0]
         
         start = (table.start_offset * 4) + 4
-        match table.datatype:
-            case 0x0: # constant
+        match table.data_type:
+            case TableDataType.Var:
                 end = start + (table.length * 4)
                 section_slice = section[start : end]
                 arr = enumerate(array('I', section_slice))
                 for _, val in arr:
                     val = symbol_ids.get(val)
                     table.values.append(val)
-            case 0x1: # int
+            case TableDataType.Int:
                 end = start + (table.length * 4)
                 section_slice = section[start : end]
                 arr = enumerate(array('I', section_slice))
                 for _, val in arr:
                     table.values.append(val)
-            case 0x2: # float
+            case TableDataType.Float:
                 end = start + (table.length * 4)
                 section_slice = section[start : end]
                 arr = enumerate(array('f', section_slice))
                 for _, val in arr:
                     table.values.append(val)
-            case 0x3: # byte
+            case TableDataType.Byte:
                 end = start + table.length
                 section_slice = section[start : end]
                 arr = enumerate(array('B', section_slice))
                 for _, val in arr:
                     table.values.append(val)
             case _:
-                print(f"Unknown array data type {table.datatype} ...skipping this table's values!")
-                table.values = []
+                raise Exception(f"Unknown table data type {table.data_type}")
     
     return tables
 
 def read_table(arr: enumerate[int], section: bytes):
     offset, value = next(arr)
     id = next(arr)[1]
-    datatype = next(arr)[1]
+    type_int = next(arr)[1]
     length = next(arr)[1]
     start_offset = next(arr)[1]
+    
+    data_type = TableDataType(type_int)
     
     if value == 0xFFFFFFFF:
         name = read_string(section, offset + 6)
@@ -74,7 +82,7 @@ def read_table(arr: enumerate[int], section: bytes):
         assert value == 0
         name = None
     
-    return Table(name, id, datatype, length, start_offset, 0, [])
+    return Table(name, id, data_type, length, start_offset, 0, [])
 
 def read_table_defs(section: bytes, code_section: bytes, symbol_ids: SymbolIds) -> list[Table]:
     arr = enumerate(array('I', section))
@@ -105,7 +113,7 @@ def print_table(table: Table, indentation_level: int = 1) -> str:
     indent = '  ' * indentation_level
     text = f"""{indent}- name: {table.name}
 {indent}  id: {hex(table.id)}
-{indent}  datatype: {hex(table.datatype)}
+{indent}  data_type: {table.data_type.name}
 {indent}  datatype2: {hex(table.datatype2)} # ?
 {indent}  length: {hex(table.length)}
 {indent}  start_offset: {hex(table.start_offset)}\n"""

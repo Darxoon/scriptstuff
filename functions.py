@@ -116,7 +116,7 @@ def print_expr_or_var(value, braces_around_expression = False) -> str:
                 return f'( {content} )'
             else:
                 return content
-        case Var(name, alias, category, id, status, flags, user_data):
+        case Var(name, alias, category, id, data_type, flags, user_data):
             if name is not None:
                 return f"{category.name}:{name}"
             elif alias is not None:
@@ -426,8 +426,12 @@ def read_table_get_index_cmd(arr: enumerate[int], symbol_ids: SymbolIds, opcode:
 class ReturnCmd:
     pass
 
-def read_return_cmd(arr: enumerate[int], symbol_ids: dict, opcode: int, is_const: bool) -> ReturnCmd:
+def read_return_cmd(arr: enumerate[int], symbol_ids: SymbolIds, opcode: int, is_const: bool) -> ReturnCmd:
     assert not is_const
+    
+    # A new layer gets pushed to in child threads (Thread and Thread2) for captured vars
+    # Return ends a thread so it gets popped again
+    symbol_ids.pop()
     
     return ReturnCmd()
 
@@ -454,7 +458,6 @@ def read_get_args_cmd(arr: enumerate[int], symbol_ids: SymbolIds, opcode: int, i
         
     return GetArgsCmd(func, args)
 
-# ??
 @dataclass
 class IfCmd:
     condition: Expr
@@ -478,7 +481,7 @@ def read_if_cmd(arr: enumerate[int], symbol_ids: SymbolIds, opcode: int, is_cons
 class IfEqualCmd:
     var1: Expr | Var | int
     var2: Expr | Var | int
-    jump_to: int
+    jump_to: int # TODO: ensure that jump_to always points to an Else, ElseIf or EndIf
 
 def read_ifequal_cmd(arr: enumerate[int], symbol_ids: SymbolIds, opcode: int, is_const: bool) -> IfEqualCmd:
     assert not is_const
@@ -571,7 +574,6 @@ def read_label_cmd(arr: enumerate[int], symbol_ids: SymbolIds, opcode: int, is_c
     
     return LabelCmd(opcode)
 
-# TODO: Find out if the endif and endswitch commands are strictly necessary for the code to run.
 @dataclass
 class EndIfCmd:
     opcode: int
@@ -584,7 +586,7 @@ def read_endif_cmd(arr: enumerate[int], symbol_ids: SymbolIds, opcode: int, is_c
 @dataclass
 class ThreadCmd:
     func: 'FunctionDef | FunctionImport | int'
-    take_args: list[Var | int]
+    take_args: list[int]
     give_args: list[Var | int]
 
 def read_thread_cmd(arr: enumerate[int], symbol_ids: SymbolIds, opcode: int, is_const: bool) -> ThreadCmd:
@@ -594,29 +596,42 @@ def read_thread_cmd(arr: enumerate[int], symbol_ids: SymbolIds, opcode: int, is_
     func = symbol_ids.get(func_int)
     assert isinstance(func, FunctionDef)
     
-    take_args = []
+    take_args: list[int] = []
     for _, value in arr:
         if value == 0x8:
             break
         
-        var = symbol_ids.get(value, value)
-        assert isinstance(var, Var) or isinstance(var, int)
-        take_args.append(var)
-        
-    give_args = []
+        take_args.append(value)
+    
+    give_args: list[Var | int] = []
     for _, value in arr:
         if value == 0x11:
             break
         
         var = symbol_ids.get(value)
+        assert isinstance(var, Var) or isinstance(var, int)
         give_args.append(var)
+    
+    # Thread and Thread2 are always ended by a Return
+    # this will make sure the thread body has access to the captured vars
+    # and that they won't leak out of this thread
+    symbol_ids.push()
+    
+    assert len(give_args) == len(take_args)
+    for give, take in zip(give_args, take_args):
+        if not isinstance(give, Var):
+            continue
+        
+        copy = replace(give)
+        copy.id = take
+        symbol_ids.add(copy)
         
     return ThreadCmd(func, take_args, give_args)
 
 @dataclass
 class Thread2Cmd:
     func: 'FunctionDef | FunctionImport | int'
-    take_args: list[Var | int]
+    take_args: list[int]
     give_args: list[Var | int]
 
 def read_thread2_cmd(arr: enumerate[int], symbol_ids: SymbolIds, opcode: int, is_const: bool) -> Thread2Cmd:
@@ -626,23 +641,36 @@ def read_thread2_cmd(arr: enumerate[int], symbol_ids: SymbolIds, opcode: int, is
     func = symbol_ids.get(func_int)
     assert isinstance(func, FunctionDef)
     
-    take_args = []
+    take_args: list[int] = []
     for _, value in arr:
         if value == 0x8:
             break
         
-        var = symbol_ids.get(value, value)
-        assert isinstance(var, Var) or isinstance(var, int)
-        take_args.append(var)
+        take_args.append(value)
         
-    give_args = []
+    give_args: list[Var | int] = []
     for _, value in arr:
         if value == 0x11:
             break
         
         var = symbol_ids.get(value)
+        assert isinstance(var, Var) or isinstance(var, int)
         give_args.append(var)
+    
+    # Thread and Thread2 are always ended by a Return
+    # this will make sure the thread body has access to the captured vars
+    # and that they won't leak out of this thread
+    symbol_ids.push()
+    
+    assert len(give_args) == len(take_args)
+    for give, take in zip(give_args, take_args):
+        if not isinstance(give, Var):
+            continue
         
+        copy = replace(give)
+        copy.id = take
+        symbol_ids.add(copy)
+    
     return Thread2Cmd(func, take_args, give_args)
 
 @dataclass
@@ -673,14 +701,12 @@ def read_wait_cmd(arr: enumerate[int], symbol_ids: SymbolIds, opcode: int, is_co
     
     return WaitCmd(is_const, duration)
 
-
-# I'm not sure how this differs from the normal wait command. This needs further looking into (maybe it waits using a different unit of time?)
 @dataclass
-class Wait2Cmd:
+class WaitMsCmd:
     is_const: bool
     duration: Expr | Var | int
 
-def read_wait2_cmd(arr: enumerate[int], symbol_ids: SymbolIds, opcode: int, is_const: bool) -> WaitMsCmd:
+def read_wait_ms_cmd(arr: enumerate[int], symbol_ids: SymbolIds, opcode: int, is_const: bool) -> WaitMsCmd:
     if is_const:
         duration_int = next(arr)[1]
         duration = symbol_ids.get(duration_int)
@@ -688,7 +714,7 @@ def read_wait2_cmd(arr: enumerate[int], symbol_ids: SymbolIds, opcode: int, is_c
     else:
         duration = read_expr(None, arr, symbol_ids)
     
-    return Wait2Cmd(is_const, duration)
+    return WaitMsCmd(is_const, duration)
 
 @dataclass
 class SwitchCmd:
@@ -774,6 +800,7 @@ def read_endswitch_cmd(arr: enumerate[int], symbol_ids: SymbolIds, opcode: int, 
     
     return EndSwitchCmd(opcode)
 
+# TODO: should this be named While or DoWhile? important distinction
 @dataclass
 class DoWhileCmd:
     is_const: bool
@@ -797,7 +824,7 @@ def read_dowhile_cmd(arr: enumerate[int], symbol_ids: SymbolIds, opcode: int, is
 class BreakCmd:
     opcode: int
 
-def read_break_cmd(arr: enumerate[int], symbol_ids: dict, opcode: int, is_const: bool) -> BreakCmd:
+def read_break_cmd(arr: enumerate[int], symbol_ids: SymbolIds, opcode: int, is_const: bool) -> BreakCmd:
     assert not is_const
     
     return BreakCmd(opcode)
@@ -846,7 +873,7 @@ INSTRUCTIONS = {
     0xe: read_call_as_child_thread_cmd,
     0x12: read_delete_runtime_cmd,
     0x16: read_wait_cmd,
-    0x17: read_wait2_cmd,
+    0x17: read_wait_ms_cmd,
     0x18: read_if_cmd,
     
     # Unusual If Instructions (experimental)
@@ -906,7 +933,8 @@ class FunctionDef:
     unk: list[Label]
     
     # analysis
-    thread_references: list['FunctionDef'] # TODO: do this for Thread2 too
+    thread_references: list['FunctionDef'] = field(default_factory=list)
+    thread2_references: list['FunctionDef'] = field(default_factory=list)
 
 def read_function_definitions(section: bytes, code_section: bytes) -> list[FunctionDef]:
     arr = enumerate(array('I', section))
@@ -937,7 +965,7 @@ def read_function_definitions(section: bytes, code_section: bytes) -> list[Funct
         
         variables = []
         for i in range(next(arr)[1]):
-            var = read_variable(arr, section, VarCategory.FuncVar)
+            var = read_variable(arr, section, VarCategory.LocalVar)
             
             if var.name == None:
                 assert (var.id & 0xFF) == 0
@@ -954,7 +982,7 @@ def read_function_definitions(section: bytes, code_section: bytes) -> list[Funct
         for _ in range(next(arr)[1]):
             labels.append(read_label(arr, section))
         
-        definitions.append(FunctionDef(name, id, is_public, field_0xc, field_0x30, field_0x34, code, None, variables, tables, labels, []))
+        definitions.append(FunctionDef(name, id, is_public, field_0xc, field_0x30, field_0x34, code, None, variables, tables, labels))
     
     assert len(definitions) == count
     return definitions
@@ -972,6 +1000,9 @@ def analyze_function_def(fn: FunctionDef, symbol_ids: SymbolIds):
                     case ThreadCmd(func):
                         if isinstance(func, FunctionDef) and func is not fn:
                             func.thread_references.append(fn)
+                    case Thread2Cmd(func):
+                        if isinstance(func, FunctionDef) and func is not fn:
+                            func.thread2_references.append(fn)
                 
                 instructions.append(instruction)
             else:
@@ -982,11 +1013,14 @@ def analyze_function_def(fn: FunctionDef, symbol_ids: SymbolIds):
     fn.instructions = instructions
 
 def print_function_def(fn: FunctionDef) -> str:
+    field_0x30_var = next((var for var in fn.vars if var.id == fn.field_0x30), None)
+    field_0x30 = print_expr_or_var(field_0x30_var) if field_0x30_var is not None else hex(fn.field_0x30)
+    
     result = f"""  - name: {fn.name if fn.name != None else 'null'}
     id: 0x{fn.id:x}
     is_public: {fn.is_public}
     field_0xc: 0x{fn.field_0xc:x}
-    field_0x30: 0x{fn.field_0x30:x}
+    field_0x30: {field_0x30} # return value / accumulator?
     field_0x34: 0x{fn.field_0x34:x}\n"""
     
     if fn.vars and len(fn.vars) > 0:
@@ -1002,10 +1036,21 @@ def print_function_def(fn: FunctionDef) -> str:
         for var in fn.unk:
             result += print_label(var)
     
-    if len(fn.thread_references) == 1:
+    if len(fn.thread_references) == 1 and len(fn.thread2_references) == 0:
         result += f"    \n    generated_from_thread: true # used by fn:{fn.thread_references[0].name}\n"
+    elif len(fn.thread_references) == 0 and len(fn.thread2_references) == 1:
+        result += f"    \n    generated_from_thread2: true # used by fn:{fn.thread2_references[0].name}\n"
     elif fn.instructions and len(fn.instructions) > 0:
-        result += "    \n    body:\n"
+        result += "    \n    "
+        
+        if len(fn.thread_references) >= 1:
+            thread_references = ', '.join(print_expr_or_var(x) for x in fn.thread_references)
+            result += f"# used by Threads: {thread_references}\n    "
+        if len(fn.thread2_references) >= 1:
+            thread2_references = ', '.join(print_expr_or_var(x) for x in fn.thread2_references)
+            result += f"# used by Thread2s: {thread2_references}\n    "
+        
+        result += "body:\n"
         start_indented_block = False
         indentation = 0
         
@@ -1033,26 +1078,27 @@ def print_function_def(fn: FunctionDef) -> str:
                     
                     value = f"Return"
                 case GetArgsCmd(func, args):
-                    value = f"GetArgs self:{func.name} ( {', '.join(print_expr_or_var(x) for x in args)} )"
+                    value = f"GetArgs fn:{'self' if func.name == fn.name else func.name} ( {', '.join(print_expr_or_var(x) for x in args)} )"
                 case IfCmd(condition, unused1, jump_to, unused2):
                     start_indented_block = True
-                    value = f"If ( {print_expr_or_var(condition)}, {hex(unused1)}, {hex(jump_to)}, {hex(unused2)} )"
+                    value = f"If {print_expr_or_var(condition)}" # , {hex(unused1)}, {hex(jump_to)}, {hex(unused2)}
                 case IfEqualCmd(var1, var2, jump_to):
                     start_indented_block = True
-                    value = f"IfEqual ( {print_expr_or_var(var1)}, {print_expr_or_var(var2)}, {hex(jump_to)} )"
+                    value = f"IfEqual ( {print_expr_or_var(var1)}, {print_expr_or_var(var2)} )" # , {hex(jump_to)}
                 case IfNotEqualCmd(var1, var2, jump_to):
                     start_indented_block = True
-                    value = f"IfNotEqual ( {print_expr_or_var(var1)}, {print_expr_or_var(var2)}, {hex(jump_to)} )"
+                    value = f"IfNotEqual ( {print_expr_or_var(var1)}, {print_expr_or_var(var2)} )" # , {hex(jump_to)}
                 case ElseCmd(jump_to):
                     if indentation > 0:
                         indentation -= 1
                     start_indented_block = True
-                    value = f"Else ( {hex(jump_to)} )"
+                    value = f"Else" #  ( {hex(jump_to)} )
                 case ElseIfCmd(start_from, unused1, condition, unused2, jump_to, unused3):
                     if indentation > 0:
                         indentation -= 1
                     start_indented_block = True
-                    value = f"ElseIf ( {hex(start_from)}, {hex(unused1)}, {print_expr_or_var(condition)}, {hex(unused2)}, {hex(jump_to)}, {hex(unused3)} )"
+                    # value = f"ElseIf ( {hex(start_from)}, {hex(unused1)}, {print_expr_or_var(condition)}, {hex(unused2)}, {hex(jump_to)}, {hex(unused3)} )"
+                    value = f"ElseIf {print_expr_or_var(condition)}"
                 case EndIfCmd(opcode):
                     if indentation > 0:
                         indentation -= 1
@@ -1063,31 +1109,30 @@ def print_function_def(fn: FunctionDef) -> str:
                     value = f"Noop_{hex(opcode)}"
                 case LabelCmd(opcode):
                     value = f"LabelPoint"
-                case ThreadCmd(func, take_args, give_args):
+                case ThreadCmd(func, take_args, give_args) | Thread2Cmd(func, take_args, give_args):
                     start_indented_block = True
-                    value = f"Thread1 {print_expr_or_var(func)} Get ( {', '.join(print_expr_or_var(x) for x in take_args)} ) Give ( {', '.join(print_expr_or_var(x) for x in give_args)} )"
-                case Thread2Cmd(func, take_args, give_args):
-                    start_indented_block = True
-                    value = f"Thread2 {print_expr_or_var(func)} Get ( {', '.join(print_expr_or_var(x) for x in take_args)} ) Give ( {', '.join(print_expr_or_var(x) for x in give_args)} )"
+                    opcode = "Thread1" if isinstance(inst, ThreadCmd) else "Thread2"
+                    captures = ', '.join(print_expr_or_var(var) for var in give_args)
+                    value = f"{opcode} {print_expr_or_var(func)} Capture ( {captures} )"
                 case DeleteRuntimeCmd(is_const, duration):
                     value = f"DeleteRuntime{'*' if is_const else '' } {print_expr_or_var(duration)}"                
                 case WaitCmd(is_const, duration):
                     value = f"Wait{'*' if is_const else '' } {print_expr_or_var(duration)}"
-                case Wait2Cmd(is_const, duration):
-                    value = f"Wait2{'*' if is_const else '' } {print_expr_or_var(duration)}"
+                case WaitMsCmd(is_const, duration):
+                    value = f"WaitMs{'*' if is_const else '' } {print_expr_or_var(duration)}"
                 case SwitchCmd(var, unused, jump_offset):
                     start_indented_block = True
-                    value = f"Switch ( {print_expr_or_var(var)}, {hex(unused)}, {hex(jump_offset)} )"                
+                    value = f"Switch {print_expr_or_var(var)}" # , {hex(unused)}, {hex(jump_offset)}                
                 case CaseCmd(is_const, var, jump_offset):
                     if indentation > 0:
                         indentation -= 1
                     start_indented_block = True
-                    value = f"Case{'*' if is_const else '' } ( {print_expr_or_var(var)}, {hex(jump_offset)} )"
+                    value = f"Case{'*' if is_const else '' } {print_expr_or_var(var)}" # , {hex(jump_offset)}
                 case CaseRangeCmd(is_const, lower, upper, jump_offset):
                     if indentation > 0:
                         indentation -= 1
                     start_indented_block = True
-                    value = f"CaseRange{'*' if is_const else '' } ( {print_expr_or_var(lower)} to {print_expr_or_var(upper)}, {hex(jump_offset)} )"
+                    value = f"CaseRange{'*' if is_const else '' } ( {print_expr_or_var(lower)} to {print_expr_or_var(upper)}" # , {hex(jump_offset)}
                 case BreakSwitchCmd(opcode):
                     if indentation > 0:
                         indentation -= 1
@@ -1099,7 +1144,7 @@ def print_function_def(fn: FunctionDef) -> str:
                     value = f"EndSwitch"
                 case DoWhileCmd(is_const, var, jump_offset):
                     start_indented_block = True
-                    value = f"DoWhile{'*' if is_const else '' } ( {print_expr_or_var(var)}, {hex(jump_offset)} )"
+                    value = f"DoWhile{'*' if is_const else '' } {print_expr_or_var(var)}" # , {hex(jump_offset)} )
                 case BreakCmd(opcode):
                     value = f"Break"
                 case EndDoWhileCmd(opcode):
@@ -1160,7 +1205,7 @@ def write_functions(sections: list[bytes], symbol_ids: SymbolIds):
             
             analyze_function_def(fn, local_symbol_ids)
     
-    out_str += 'definitions:\n'
+    out_str += '\ndefinitions:\n'
     is_first = True
     for fn in definitions:
         if not is_first:

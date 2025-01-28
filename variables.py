@@ -13,8 +13,8 @@ class VarCategory(Enum):
     Const = 1
     Global = 2
     # function local
-    Local = 3
-    FuncVar = 4
+    TempVar = 3
+    LocalVar = 4
 
 def read_string(section: bytes, offset_words: int) -> str:
     buffer = section[offset_words * 4:]
@@ -28,7 +28,7 @@ class Var:
     category: VarCategory
     
     id: int
-    status: int
+    data_type: int
     flags: int
     user_data: int | str
 
@@ -79,7 +79,7 @@ def read_variable_defs(section: bytes, category: VarCategory) -> list[Var]:
     assert next(arr, None) == None
     return variables
 
-VAR_STATUS_NAMES = {
+VAR_TYPE_NAMES = {
     0: 'Float',
     1: 'Int',
     3: 'String',
@@ -95,15 +95,15 @@ def print_var(var: Var, indentation_level: int = 1) -> str:
     
     if isinstance(var.user_data, str):
         user_data = repr(var.user_data)
-    elif var.status in [0, 1] or var.user_data == 0:
+    elif var.data_type in [0, 1] or var.user_data == 0:
         user_data = str(var.user_data)
     else:
         user_data = hex(var.user_data)
     
-    if var.status in VAR_STATUS_NAMES:
-        status = VAR_STATUS_NAMES[var.status] + f" # {var.status}"
+    if var.data_type in VAR_TYPE_NAMES:
+        type = VAR_TYPE_NAMES[var.data_type] + f" # {var.data_type}"
     else:    
-        status = var.status
+        type = var.data_type
     
     # no need to print category as the variables are
     # already grouped by category in output
@@ -117,7 +117,7 @@ def print_var(var: Var, indentation_level: int = 1) -> str:
     
     result += f"id: 0x{var.id:x}\n"
     
-    result += f"{indent}  status: {status}\n"
+    result += f"{indent}  type: {type}\n"
     
     if var.flags != 0:
         result += f"{indent}  flags: 0x{var.flags:x}\n"
@@ -135,10 +135,10 @@ def write_variables(sections: list[bytes], symbol_ids: SymbolIds):
     var_str = 'static_variables:\n'
     prev_status = None
     for var in variables:
-        if prev_status != None and var.status != prev_status:
+        if prev_status != None and var.data_type != prev_status:
             var_str += '  \n'
         
-        prev_status = var.status
+        prev_status = var.data_type
         symbol_ids.add(var)
         var_str += print_var(var)
     
@@ -148,10 +148,10 @@ def write_variables(sections: list[bytes], symbol_ids: SymbolIds):
     var_str += '\nconstants:\n'
     prev_status = None
     for var in constants:
-        if prev_status != None and var.status != prev_status:
+        if prev_status != None and var.data_type != prev_status:
             var_str += '  \n'
         
-        prev_status = var.status
+        prev_status = var.data_type
         symbol_ids.add(var)
         var_str += print_var(var)
     
@@ -161,16 +161,16 @@ def write_variables(sections: list[bytes], symbol_ids: SymbolIds):
     var_str += '\nglobal_variables:\n'
     prev_status = None
     for var in global_variables:
-        if prev_status != None and var.status != prev_status:
+        if prev_status != None and var.data_type != prev_status:
             var_str += '  \n'
         
-        prev_status = var.status
+        prev_status = var.data_type
         symbol_ids.add(var)
         var_str += print_var(var)
     
     # local variables (defined implicitly)
     for i in range(0x16): # TODO: how many are there?
-        var = Var(None, f"{i:X}", VarCategory.Local, 0x10000100 | i, 0, 0, 0)
+        var = Var(None, f"{i:X}", VarCategory.TempVar, 0x10000100 | i, 0, 0, 0)
         symbol_ids.add(var)
     
     with open(argv[1] + '.variables.yaml', 'w', encoding='utf-8') as f:

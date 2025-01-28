@@ -1,5 +1,6 @@
 from array import array
 from dataclasses import dataclass, field, replace
+from enum import Enum
 from sys import argv
 
 from tables import Table, print_table, read_table
@@ -13,11 +14,21 @@ def read_string(section: bytes, offset_words: int) -> str:
 
 
 # function imports
+# (I feel like I'm really misunderstanding this type)
+class ImportType(Enum):
+    LocalVar = 0
+    ScriptVar = 1
+    Unk1 = 2
+    Table = 3
+    Label = 4
+    Unk2 = 5
+    Func = 7
+
 @dataclass
 class FunctionImport:
     name: str | None
     field_0x4: int # short
-    field_0x8: int
+    type: ImportType
     id: int
 
 def read_function_imports(section: bytes) -> list[FunctionImport]:
@@ -28,7 +39,7 @@ def read_function_imports(section: bytes) -> list[FunctionImport]:
     
     for i, value in arr:
         field_0x4 = next(arr)[1] & 0xFFFF
-        field_0x8 = next(arr)[1]
+        type = next(arr)[1]
         next(arr) # unused
         
         id = next(arr)[1]
@@ -44,7 +55,7 @@ def read_function_imports(section: bytes) -> list[FunctionImport]:
             assert value == 0
             name = None
         
-        imports.append(FunctionImport(name, field_0x4, field_0x8, id))
+        imports.append(FunctionImport(name, field_0x4, ImportType(type), id))
     
     assert len(imports) == count
     return imports
@@ -52,7 +63,7 @@ def read_function_imports(section: bytes) -> list[FunctionImport]:
 def print_function_import(fn: FunctionImport) -> str:
     assert fn.name is not None, "Imported function name is None"
     
-    return f"  - {{ id: 0x{fn.id:x}, name: '{fn.name}', field_0x4: {fn.field_0x4}, field_0x8: {fn.field_0x8} }}\n"
+    return f"  - {{ id: 0x{fn.id:x}, name: '{fn.name}', field_0x4: {fn.field_0x4}, type: {fn.type.name} }}\n"
 
 
 # labels
@@ -838,6 +849,36 @@ def read_enddowhile_cmd(arr: enumerate[int], symbol_ids: SymbolIds, opcode: int,
     
     return EndDoWhileCmd(opcode)
 
+@dataclass
+class WaitCompletedCmd:
+    is_const: bool
+    runtime: Expr | Var | int
+
+def read_wait_completed_cmd(arr: enumerate[int], symbol_ids: SymbolIds, opcode: int, is_const: bool) -> WaitCompletedCmd:
+    if is_const:
+        runtime_int = next(arr)[1]
+        runtime = symbol_ids.get(runtime_int)
+        assert isinstance(runtime, Var) or isinstance(runtime, int)
+    else:
+        runtime = read_expr(None, arr, symbol_ids)
+    
+    return WaitCompletedCmd(is_const, runtime)
+
+@dataclass
+class WaitWhileCmd:
+    condition: Expr
+    unused1: int
+    unused2: int
+
+def read_wait_while_cmd(arr: enumerate[int], symbol_ids: SymbolIds, opcode: int, is_const: bool) -> WaitWhileCmd:
+    assert not is_const
+    
+    condition = read_expr(None, arr, symbol_ids)
+    unused1 = next(arr)[1]
+    unused2 = next(arr)[1]
+    
+    return WaitWhileCmd(condition, unused1, unused2)
+
 
 # more known commands: Switch, DoWhile, Read[n], Write
 
@@ -912,6 +953,8 @@ INSTRUCTIONS = {
     0x80: read_call_var_cmd,
     # 0x81: read_call_var_as_thread,
     # 0x82: read_call_var_as_child_thread,
+    0x89: read_wait_completed_cmd,
+    0x9f: read_wait_while_cmd,
 }
 
 
@@ -1163,6 +1206,10 @@ def print_function_def(fn: FunctionDef) -> str:
                     value = f"ReadTableEntriesVec3 ( {print_expr_or_var(arrayt)}, {print_expr_or_var(index)}, {print_expr_or_var(x)}, {print_expr_or_var(y)}, {print_expr_or_var(z)} )"
                 case TableGetIndexCmd(is_const, arrayt, occurance, var):
                     value = f"TableGetIndex ( {print_expr_or_var(arrayt)}, {print_expr_or_var(occurance)}, {print_expr_or_var(var)} )"
+                case WaitCompletedCmd(is_const, runtime):
+                    value = f"WaitCompleted{'*' if is_const else '' } {print_expr_or_var(runtime)}"
+                case WaitWhileCmd(condition):
+                    value = f"WaitWhile {print_expr_or_var(condition)}"
                 case UnknownCmd(opcode, is_const, args):
                     value = f"Unk_0x{opcode:x}{'*' if is_const else ' '} ( {', '.join(print_expr_or_var(x) for x in args)} )"
                 case _:

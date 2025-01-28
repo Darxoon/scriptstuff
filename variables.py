@@ -5,6 +5,8 @@ from enum import Enum
 import struct
 from sys import argv
 
+from util import SymbolIds
+
 class VarCategory(Enum):
     # script binary scope
     Static = 0
@@ -126,7 +128,7 @@ def print_var(var: Var, indentation_level: int = 1) -> str:
     return result
 
 
-def write_variables(sections: list[bytes], symbol_ids: dict):
+def write_variables(sections: list[bytes], symbol_ids: SymbolIds):
     # section 2
     variables = read_variable_defs(sections[2], VarCategory.Static)
     
@@ -137,7 +139,7 @@ def write_variables(sections: list[bytes], symbol_ids: dict):
             var_str += '  \n'
         
         prev_status = var.status
-        symbol_ids[var.id] = var
+        symbol_ids.add(var)
         var_str += print_var(var)
     
     # section 4
@@ -150,7 +152,7 @@ def write_variables(sections: list[bytes], symbol_ids: dict):
             var_str += '  \n'
         
         prev_status = var.status
-        symbol_ids[var.id] = var
+        symbol_ids.add(var)
         var_str += print_var(var)
     
     # section 6
@@ -163,13 +165,13 @@ def write_variables(sections: list[bytes], symbol_ids: dict):
             var_str += '  \n'
         
         prev_status = var.status
-        symbol_ids[var.id] = var
+        symbol_ids.add(var)
         var_str += print_var(var)
     
     # local variables (defined implicitly)
     for i in range(0x16): # TODO: how many are there?
         var = Var(None, f"{i:X}", VarCategory.Local, 0x10000100 | i, 0, 0, 0)
-        symbol_ids[var.id] = var
+        symbol_ids.add(var)
     
     with open(argv[1] + '.variables.yaml', 'w', encoding='utf-8') as f:
         f.write(var_str)

@@ -6,6 +6,7 @@ from typing import TypeVar
 
 from functions import write_functions
 from tables import write_tables
+from util import SymbolIds
 from variables import write_variables
 
 T = TypeVar('T')
@@ -42,26 +43,28 @@ def main():
         input_file = f.read()
     
     # predefined symbol ids for expressions (incomplete)
-    symbol_ids = {
-    0x3f: 'next_function',
-   #0x40: exit,
-    0x41: '(',
-    0x42: ')',
-    0x43: '||',
-    0x44: '&&',
+    symbol_ids = SymbolIds()
     
-    0x4a: '==',
-    0x4b: '!=',
-    0x4c: '>',
-    0x4d: '<',
-    0x4e: '>=',
-    0x4f: '<=',
+    # TODO: make these only available in expressions and not outside
+    # TODO: what is next_function?
+    symbol_ids.add('next_function', id=0x3f)
+    symbol_ids.add('(', id=0x41)
+    symbol_ids.add(')', id=0x42)
+    symbol_ids.add('||', id=0x43)
+    symbol_ids.add('&&', id=0x44)
     
-    0x53: '+',
-    0x54: '-',
-    0x55: '*',
-    0x56: '/',
-    }
+    symbol_ids.add('==', id=0x4a)
+    symbol_ids.add('!=', id=0x4b)
+    symbol_ids.add('>', id=0x4c)
+    symbol_ids.add('<', id=0x4d)
+    symbol_ids.add('>=', id=0x4e)
+    symbol_ids.add('<=', id=0x4f)
+    
+    symbol_ids.add('+', id=0x53)
+    symbol_ids.add('-', id=0x54)
+    symbol_ids.add('*', id=0x55)
+    symbol_ids.add('/', id=0x56)
+    
     sections = read_ksm_container(input_file)
     
     write_variables(sections, symbol_ids)

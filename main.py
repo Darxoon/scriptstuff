@@ -51,7 +51,13 @@ def main():
     symbol_ids.add('(', id=0x41)
     symbol_ids.add(')', id=0x42)
     symbol_ids.add('||', id=0x43)
-    symbol_ids.add('&&', id=0x44)
+    symbol_ids.add('&&', id=0x44)    
+    
+    symbol_ids.add('|', id=0x45)
+    symbol_ids.add('&', id=0x46)
+    symbol_ids.add('^', id=0x47)
+    symbol_ids.add('<<', id=0x48)
+    symbol_ids.add('>>', id=0x49)
     
     symbol_ids.add('==', id=0x4a)
     symbol_ids.add('!=', id=0x4b)
@@ -60,6 +66,7 @@ def main():
     symbol_ids.add('>=', id=0x4e)
     symbol_ids.add('<=', id=0x4f)
     
+    symbol_ids.add('%', id=0x52)
     symbol_ids.add('+', id=0x53)
     symbol_ids.add('-', id=0x54)
     symbol_ids.add('*', id=0x55)

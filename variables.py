@@ -14,7 +14,8 @@ class VarCategory(Enum):
     Global = 2
     # function local
     TempVar = 3
-    LocalVar = 4
+    ClearTempVar = 4
+    LocalVar = 5
 
 def read_string(section: bytes, offset_words: int) -> str:
     buffer = section[offset_words * 4:]
@@ -168,9 +169,15 @@ def write_variables(sections: list[bytes], symbol_ids: SymbolIds):
         symbol_ids.add(var)
         var_str += print_var(var)
     
-    # local variables (defined implicitly)
-    for i in range(0x16): # TODO: how many are there?
+    # temporary variables (defined implicitly)
+    for i in range(20):
         var = Var(None, f"{i:X}", VarCategory.TempVar, 0x10000100 | i, 0, 0, 0)
+        symbol_ids.add(var)
+
+    for i in range(20):
+        # these temp vars are the same as regular but cleared to 0 whenever they are accessed
+        # good for passing previously uninitialized variables as out vars to a function
+        var = Var(None, f"{i:X}", VarCategory.ClearTempVar, 0x10000400 | i, 0, 0, 0)
         symbol_ids.add(var)
     
     with open(argv[1] + '.variables.yaml', 'w', encoding='utf-8') as f:

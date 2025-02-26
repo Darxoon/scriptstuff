@@ -119,10 +119,11 @@ def read_expr(initial_element: int | None, arr: enumerate[int], symbol_ids: Symb
     
     return Expr(elements)
 
+# TODO: replace this with plain __str__
 def print_expr_or_var(value, braces_around_expression = False) -> str:
     match value:
         case Expr(elements):
-            content = ' '.join(print_expr_or_var(x, True) for x in elements)
+            content = ' '.join(print_expr_or_var(x) for x in elements)
             if braces_around_expression:
                 return f'( {content} )'
             else:
@@ -578,21 +579,21 @@ def read_noop_cmd(arr: enumerate[int], symbol_ids: SymbolIds, opcode: int, is_co
 
 @dataclass
 class LabelCmd:
-    opcode: int
+    pass
 
 def read_label_cmd(arr: enumerate[int], symbol_ids: SymbolIds, opcode: int, is_const: bool) -> LabelCmd:
     assert not is_const
     
-    return LabelCmd(opcode)
+    return LabelCmd()
 
 @dataclass
 class EndIfCmd:
-    opcode: int
+    pass
 
 def read_endif_cmd(arr: enumerate[int], symbol_ids: SymbolIds, opcode: int, is_const: bool) -> EndIfCmd:
     assert not is_const
     
-    return EndIfCmd(opcode)
+    return EndIfCmd()
 
 @dataclass
 class ThreadCmd:
@@ -795,30 +796,29 @@ def read_case_range_cmd(arr: enumerate[int], symbol_ids: SymbolIds, opcode: int,
 
 @dataclass
 class BreakSwitchCmd:
-    opcode: int
+    pass
 
 def read_breakswitch_cmd(arr: enumerate[int], symbol_ids: SymbolIds, opcode: int, is_const: bool) -> BreakSwitchCmd:
     assert not is_const
     
-    return BreakSwitchCmd(opcode)
+    return BreakSwitchCmd()
 
 @dataclass
 class EndSwitchCmd:
-    opcode: int
+    pass
 
 def read_endswitch_cmd(arr: enumerate[int], symbol_ids: SymbolIds, opcode: int, is_const: bool) -> EndSwitchCmd:
     assert not is_const
     
-    return EndSwitchCmd(opcode)
+    return EndSwitchCmd()
 
-# TODO: should this be named While or DoWhile? important distinction
 @dataclass
-class DoWhileCmd:
+class WhileCmd:
     is_const: bool
     value: Expr | Var | int
     jump_offset: int
 
-def read_dowhile_cmd(arr: enumerate[int], symbol_ids: SymbolIds, opcode: int, is_const: bool) -> DoWhileCmd:
+def read_while_cmd(arr: enumerate[int], symbol_ids: SymbolIds, opcode: int, is_const: bool) -> WhileCmd:
     
     if is_const:
         value_int = next(arr)[1]
@@ -829,25 +829,25 @@ def read_dowhile_cmd(arr: enumerate[int], symbol_ids: SymbolIds, opcode: int, is
     
     jump_offset = next(arr)[1]
     
-    return DoWhileCmd(is_const, value, jump_offset)
+    return WhileCmd(is_const, value, jump_offset)
 
 @dataclass
 class BreakCmd:
-    opcode: int
+    pass
 
 def read_break_cmd(arr: enumerate[int], symbol_ids: SymbolIds, opcode: int, is_const: bool) -> BreakCmd:
     assert not is_const
     
-    return BreakCmd(opcode)
+    return BreakCmd()
 
 @dataclass
-class EndDoWhileCmd:
-    opcode: int
+class EndWhileCmd:
+    pass
 
-def read_enddowhile_cmd(arr: enumerate[int], symbol_ids: SymbolIds, opcode: int, is_const: bool) -> EndDoWhileCmd:
+def read_end_while_cmd(arr: enumerate[int], symbol_ids: SymbolIds, opcode: int, is_const: bool) -> EndWhileCmd:
     assert not is_const
     
-    return EndDoWhileCmd(opcode)
+    return EndWhileCmd()
 
 @dataclass
 class WaitCompletedCmd:
@@ -879,8 +879,17 @@ def read_wait_while_cmd(arr: enumerate[int], symbol_ids: SymbolIds, opcode: int,
     
     return WaitWhileCmd(condition, unused1, unused2)
 
+@dataclass
+class ToIntCmd:
+    variable: Var | int
 
-# more known commands: Switch, DoWhile, Read[n], Write
+def read_to_int_cmd(arr: enumerate[int], symbol_ids: SymbolIds, opcode: int, is_const: bool) -> ToIntCmd:
+    assert not is_const
+    
+    var_int = next(arr)[1]
+    var = symbol_ids.get(var_int)
+    
+    return ToIntCmd(var)
 
 @dataclass
 class UnknownCmd:
@@ -932,9 +941,9 @@ INSTRUCTIONS = {
     0x38: read_endswitch_cmd,
     
     # DoWhile Instructions
-    0x39: read_dowhile_cmd,
+    0x39: read_while_cmd,
     0x3a: read_break_cmd,
-    0x3c: read_enddowhile_cmd,
+    0x3c: read_end_while_cmd,
     
     0x3d: read_set_cmd,
     
@@ -953,6 +962,7 @@ INSTRUCTIONS = {
     0x80: read_call_var_cmd,
     # 0x81: read_call_var_as_thread,
     # 0x82: read_call_var_as_child_thread,
+    0x85: read_to_int_cmd,
     0x89: read_wait_completed_cmd,
     0x9f: read_wait_while_cmd,
 }
@@ -1106,7 +1116,7 @@ def print_function_def(fn: FunctionDef) -> str:
                 case ReturnValCmd(is_const, var):
                     value = f"ReturnVal{'*' if is_const else ' '} ( {print_expr_or_var(var)} )"
                 case SetCmd(is_const, destination, source):
-                    value = f"Set{'*' if is_const else ' '} {print_expr_or_var(destination)} {print_expr_or_var(source, True)}"
+                    value = f"Set{'*' if is_const else ' '}  {print_expr_or_var(destination)} {print_expr_or_var(source, True)}"
                 case CallCmd(is_const, func, args):
                     value = f"Call{'*' if is_const else ' '} {func if isinstance(func, int) else func.name} ( {', '.join(print_expr_or_var(x) for x in args)} )"
                 case CallAsThreadCmd(is_const, func, args):
@@ -1142,7 +1152,7 @@ def print_function_def(fn: FunctionDef) -> str:
                     start_indented_block = True
                     # value = f"ElseIf ( {hex(start_from)}, {hex(unused1)}, {print_expr_or_var(condition)}, {hex(unused2)}, {hex(jump_to)}, {hex(unused3)} )"
                     value = f"ElseIf {print_expr_or_var(condition)}"
-                case EndIfCmd(opcode):
+                case EndIfCmd():
                     if indentation > 0:
                         indentation -= 1
                     value = f"EndIf"
@@ -1150,7 +1160,7 @@ def print_function_def(fn: FunctionDef) -> str:
                     value = f"GotoLabel {print_expr_or_var(label)}"
                 case NoopCmd(opcode):
                     value = f"Noop_{hex(opcode)}"
-                case LabelCmd(opcode):
+                case LabelCmd():
                     value = f"LabelPoint"
                 case ThreadCmd(func, take_args, give_args) | Thread2Cmd(func, take_args, give_args):
                     start_indented_block = True
@@ -1176,24 +1186,24 @@ def print_function_def(fn: FunctionDef) -> str:
                         indentation -= 1
                     start_indented_block = True
                     value = f"CaseRange{'*' if is_const else '' } ( {print_expr_or_var(lower)} to {print_expr_or_var(upper)}" # , {hex(jump_offset)}
-                case BreakSwitchCmd(opcode):
+                case BreakSwitchCmd():
                     if indentation > 0:
                         indentation -= 1
                     start_indented_block = True
                     value = f"BreakSwitch"
-                case EndSwitchCmd(opcode):
+                case EndSwitchCmd():
                     if indentation > 0:
                         indentation -= 1
                     value = f"EndSwitch"
-                case DoWhileCmd(is_const, var, jump_offset):
+                case WhileCmd(is_const, var, jump_offset):
                     start_indented_block = True
-                    value = f"DoWhile{'*' if is_const else '' } {print_expr_or_var(var)}" # , {hex(jump_offset)} )
-                case BreakCmd(opcode):
+                    value = f"While{'*' if is_const else '' } {print_expr_or_var(var)}" # , {hex(jump_offset)} )
+                case BreakCmd():
                     value = f"Break"
-                case EndDoWhileCmd(opcode):
+                case EndWhileCmd():
                     if indentation > 0:
                         indentation -= 1
-                    value = f"EndDoWhile"
+                    value = f"EndWhile"
                 case ReadTableLengthCmd(is_const, arrayt):
                     value = f"ReadTableLength ( {print_expr_or_var(arrayt)} )"
                 case ReadTableEntryCmd(is_const, arrayt, index):
@@ -1210,6 +1220,8 @@ def print_function_def(fn: FunctionDef) -> str:
                     value = f"WaitCompleted{'*' if is_const else '' } {print_expr_or_var(runtime)}"
                 case WaitWhileCmd(condition):
                     value = f"WaitWhile {print_expr_or_var(condition)}"
+                case ToIntCmd(var):
+                    value = f"ToInt {print_expr_or_var(var)}"
                 case UnknownCmd(opcode, is_const, args):
                     value = f"Unk_0x{opcode:x}{'*' if is_const else ' '} ( {', '.join(print_expr_or_var(x) for x in args)} )"
                 case _:

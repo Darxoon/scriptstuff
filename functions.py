@@ -1234,19 +1234,27 @@ def print_function_def(fn: FunctionDef) -> str:
     
     return result
 
-def write_functions(sections: list[bytes], symbol_ids: SymbolIds):
+def print_function_imports(sections: list[bytes], symbol_ids: SymbolIds) -> str:
     # section 5 (function imports)
     imports = read_function_imports(sections[5])
     
+    if len(imports) == 0:
+        return ""
+    
+    out_str = '\nimports:\n'
+    
     for fn in imports:
         symbol_ids.add(fn)
-    
-    out_str = 'imports:\n'
-    for fn in imports:
         out_str += print_function_import(fn)
     
+    return out_str
+
+def print_function_definitions(sections: list[bytes], symbol_ids: SymbolIds) -> str:
     # section 1 (function definitions)
     definitions = read_function_definitions(sections[1], sections[7])
+    
+    if len(definitions) == 0:
+        return ""
     
     for fn in definitions:
         symbol_ids.add(fn)
@@ -1264,8 +1272,9 @@ def write_functions(sections: list[bytes], symbol_ids: SymbolIds):
             
             analyze_function_def(fn, local_symbol_ids)
     
-    out_str += '\ndefinitions:\n'
+    out_str = '\ndefinitions:\n'
     is_first = True
+    
     for fn in definitions:
         if not is_first:
             if out_str.endswith('  \n'):
@@ -1276,5 +1285,4 @@ def write_functions(sections: list[bytes], symbol_ids: SymbolIds):
         out_str += print_function_def(fn)
         is_first = False
     
-    with open(argv[1] + '.functions.yaml', 'w', encoding='utf-8') as f:
-        f.write(out_str)
+    return out_str

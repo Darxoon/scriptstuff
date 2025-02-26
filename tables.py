@@ -127,16 +127,17 @@ def print_table(table: Table, indentation_level: int = 1) -> str:
     return text
 
 
-def write_tables(sections: list[bytes], symbol_ids: SymbolIds):
+def print_tables(sections: list[bytes], symbol_ids: SymbolIds) -> str:
     # section 3
     tables = read_table_defs(sections[3], sections[7], symbol_ids)
         
+    if len(tables) == 0:
+        return ''
+    
+    out_str = '\ntables:\n'
+
     for table in tables:
         symbol_ids.add(table)
-    
-    out_str = 'tables:\n'
-    for table in tables:
         out_str += print_table(table)
     
-    with open(argv[1] + '.tables.yaml', 'w', encoding='utf-8') as f:
-        f.write(out_str)
+    return out_str

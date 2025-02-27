@@ -1,105 +1,49 @@
 from array import array
 from dataclasses import dataclass, field, replace
-from enum import Enum
+import dataclasses
 from itertools import chain
 import json
 
+from other_types import Label, ScriptImport, print_function_import, print_label, read_function_imports, read_label
 from tables import Table, print_table, read_table
-from util import SymbolIds
+from util import SymbolIds, read_string
 from variables import Var, VarCategory, print_var, read_variable
-
-def read_string(section: bytes, offset_words: int) -> str:
-    buffer = section[offset_words * 4:]
-    bytelen = buffer.index(0)
-    return str(buffer[:bytelen], 'utf-8')
-
-
-# function imports
-# (I feel like I'm really misunderstanding this type)
-class ImportType(Enum):
-    LocalVar = 0
-    ScriptVar = 1
-    Unk1 = 2
-    Table = 3
-    Label = 4
-    Unk2 = 5
-    Func = 7
-
-@dataclass
-class FunctionImport:
-    name: str | None
-    field_0x4: int # short
-    type: ImportType
-    id: int
-
-def read_function_imports(section: bytes) -> list[FunctionImport]:
-    arr = enumerate(array('I', section))
-    
-    count = next(arr)[1]
-    imports = []
-    
-    for i, value in arr:
-        field_0x4 = next(arr)[1] & 0xFFFF
-        type = next(arr)[1]
-        next(arr) # unused
-        
-        id = next(arr)[1]
-        next(arr) # unused
-        next(arr) # unused
-        
-        if value == 0xFFFFFFFF:
-            name = read_string(section, i + 8)
-            
-            for _ in range(next(arr)[1]):
-                next(arr)
-        else:
-            assert value == 0
-            name = None
-        
-        imports.append(FunctionImport(name, field_0x4, ImportType(type), id))
-    
-    assert len(imports) == count
-    return imports
-
-def print_function_import(fn: FunctionImport) -> str:
-    assert fn.name is not None, "Imported function name is None"
-    
-    return f"  - {{ id: 0x{fn.id:x}, name: '{fn.name}', field_0x4: {fn.field_0x4}, type: {fn.type.name} }}\n"
-
-
-# labels
-@dataclass
-class Label:
-    name: str | None
-    id: int
-    code_offset: int
-
-def read_label(arr: enumerate[int], section: bytes):
-    offset, value = next(arr)
-    id = next(arr)[1]
-    code_offset = next(arr)[1]
-    
-    if value == 0xFFFFFFFF:
-        name = read_string(section, offset + 6)
-        
-        for _ in range(next(arr)[1]):
-            next(arr)
-    else:
-        assert value == 0
-        name = None
-    
-    return Label(name, id, code_offset)
-
-def print_label(label: Label) -> str:
-    return f"""      - name: {label.name if label.name != None else 'null'}
-        id: 0x{label.id:x}
-        code_offset: 0x{label.code_offset:x}\n"""
-
 
 # script expressions
 @dataclass
+class ExprSymbol:
+    label: str
+
+EXPR_SYMBOLS = {
+    0x3f: ExprSymbol('next_function'),
+    0x41: ExprSymbol('('),
+    0x42: ExprSymbol(')'),
+    0x43: ExprSymbol('||'),
+    0x44: ExprSymbol('&&'),
+    
+    0x45: ExprSymbol('|'),
+    0x46: ExprSymbol('&'),
+    0x47: ExprSymbol('^'),
+    0x48: ExprSymbol('<<'),
+    0x49: ExprSymbol('>>'),
+    
+    0x4a: ExprSymbol('=='),
+    0x4b: ExprSymbol('!='),
+    0x4c: ExprSymbol('>'),
+    0x4d: ExprSymbol('<'),
+    0x4e: ExprSymbol('>='),
+    0x4f: ExprSymbol('<='),
+    
+    0x52: ExprSymbol('%'),
+    0x53: ExprSymbol('+'),
+    0x54: ExprSymbol('-'),
+    0x55: ExprSymbol('*'),
+    0x56: ExprSymbol('/'),
+}
+
+@dataclass
 class Expr:
-    elements: list['Var | CallCmd | int']
+    elements: list['Var | CallCmd | int'] = field(default_factory=lambda: [])
 
 def read_expr(initial_element: int | None, arr: enumerate[int], symbol_ids: SymbolIds, raise_on_ending_sequence = False) -> Expr:
     elements = []
@@ -111,15 +55,17 @@ def read_expr(initial_element: int | None, arr: enumerate[int], symbol_ids: Symb
             break
         
         if value == 0xc:
-            elements.append(read_call_cmd(arr, symbol_ids, 0xc, False))
+            elements.append(read_call_cmd(arr, symbol_ids, ReadCmdOptions(0xc, False)))
             continue
         
-        var = symbol_ids.get(value)
+        if value in EXPR_SYMBOLS:
+            var = EXPR_SYMBOLS[value]
+        else:
+            var = symbol_ids.get(value)
         elements.append(var)
     
     return Expr(elements)
 
-# TODO: replace this with plain __str__
 def print_expr_or_var(value, braces_around_expression = False) -> str:
     match value:
         case Expr(elements):
@@ -128,6 +74,8 @@ def print_expr_or_var(value, braces_around_expression = False) -> str:
                 return f'( {content} )'
             else:
                 return content
+        case ExprSymbol(label):
+            return label
         case Var(name, alias, category, id, data_type, flags, user_data):
             if name is not None:
                 return f"{category.name}:{name}"
@@ -137,7 +85,7 @@ def print_expr_or_var(value, braces_around_expression = False) -> str:
                 return f"{user_data}`" if isinstance(user_data, (int, float)) else repr(user_data)
             else:
                 return f"{category.name}:0x{id:x}"
-        case FunctionImport(name) | FunctionDef(name):
+        case ScriptImport(name) | FunctionDef(name):
             return f"fn:{name}"
         case Label(name, id):
             if name is not None:
@@ -157,76 +105,80 @@ def print_expr_or_var(value, braces_around_expression = False) -> str:
                 return content
         case int(n):
             return f"?0x{n:x}"
-        case str(n):
-            return n
         case _:
             raise Exception(f"Unknown thing {repr(value)}")
 
 # script instructions
 @dataclass
+class ReadCmdOptions:
+    opcode: int
+    is_const: bool
+    cmd_offset: int | None = None
+
+@dataclass
 class ReturnValCmd:
     is_const: bool
     value: Expr | Var | int
 
-def read_returnval_cmd(arr: enumerate[int], symbol_ids: SymbolIds, opcode: int, is_const: bool) -> ReturnValCmd:
+def read_returnval_cmd(arr: enumerate[int], symbol_ids: SymbolIds, options: ReadCmdOptions) -> ReturnValCmd:
     value_int = next(arr)[1]
-    if is_const:
+    if options.is_const:
         value = symbol_ids.get(value_int)
         assert isinstance(value, Var) or isinstance(value, int)
         if value == 0x40:
-            value = Expr([])
+            value = Expr()
     else:
         value = read_expr(value_int, arr, symbol_ids)
     
-    return ReturnValCmd(is_const, value)
+    return ReturnValCmd(options.is_const, value)
 
 @dataclass 
 class CallCmd:
     is_const: bool
-    func: 'FunctionImport | FunctionDef | int'
+    func: 'ScriptImport | FunctionDef | int'
     args: list[Expr | Var | int]
 
-def read_call_cmd(arr: enumerate[int], symbol_ids: SymbolIds, opcode: int, is_const: bool) -> CallCmd:
+def read_call_cmd(arr: enumerate[int], symbol_ids: SymbolIds, options: ReadCmdOptions) -> CallCmd:
     func_int = next(arr)[1]
     func = symbol_ids.get(func_int)
-    assert isinstance(func, FunctionImport) or isinstance(func, FunctionDef) or isinstance(func, int)
+    assert isinstance(func, ScriptImport) or isinstance(func, FunctionDef) or isinstance(func, int)
     
     args = []
     for _, value in arr:
         if value == 0x11:
             break
         
-        if is_const:
+        if options.is_const:
             var = symbol_ids.get(value)
             args.append(var)
         else:
             args.append(read_expr(value, arr, symbol_ids))
     
-    return CallCmd(is_const, func, args)
+    return CallCmd(options.is_const, func, args)
 
 @dataclass
 class CallAsThreadCmd:
     is_const: bool
-    func: 'FunctionImport | FunctionDef | int'
+    func: 'ScriptImport | FunctionDef | int'
     args: list[Expr | Var | int]
 
-def read_call_as_thread_cmd(arr: enumerate[int], symbol_ids: SymbolIds, opcode: int, is_const: bool) -> CallAsThreadCmd:
+def read_call_as_thread_cmd(arr: enumerate[int], symbol_ids: SymbolIds, options: ReadCmdOptions) -> CallAsThreadCmd:
     func_int = next(arr)[1]
     func = symbol_ids.get(func_int)
-    assert isinstance(func, FunctionImport) or isinstance(func, FunctionDef) or isinstance(func, int)
+    assert isinstance(func, ScriptImport) or isinstance(func, FunctionDef) or isinstance(func, int)
     
     args = []
     for _, value in arr:
         if value == 0x11:
             break
         
-        if is_const:
+        if options.is_const:
             var = symbol_ids.get(value)
             args.append(var)
         else:
             args.append(read_expr(value, arr, symbol_ids))
     
-    return CallAsThreadCmd(is_const, func, args)
+    return CallAsThreadCmd(options.is_const, func, args)
 
 # Same as CallAsThread but sets the original thread as the new thread's parent
 # This might mean that the parent thread waits for the child to be done before it continues
@@ -234,26 +186,26 @@ def read_call_as_thread_cmd(arr: enumerate[int], symbol_ids: SymbolIds, opcode: 
 @dataclass
 class CallAsChildThreadCmd:
     is_const: bool
-    func: 'FunctionImport | FunctionDef | int'
+    func: 'ScriptImport | FunctionDef | int'
     args: list[Expr | Var | int]
 
-def read_call_as_child_thread_cmd(arr: enumerate[int], symbol_ids: SymbolIds, opcode: int, is_const: bool) -> CallAsChildThreadCmd:
+def read_call_as_child_thread_cmd(arr: enumerate[int], symbol_ids: SymbolIds, options: ReadCmdOptions) -> CallAsChildThreadCmd:
     func_int = next(arr)[1]
     func = symbol_ids.get(func_int)
-    assert isinstance(func, FunctionImport) or isinstance(func, FunctionDef) or isinstance(func, int)
+    assert isinstance(func, ScriptImport) or isinstance(func, FunctionDef) or isinstance(func, int)
     
     args = []
     for _, value in arr:
         if value == 0x11:
             break
         
-        if is_const:
+        if options.is_const:
             var = symbol_ids.get(value)
             args.append(var)
         else:
             args.append(read_expr(value, arr, symbol_ids))
     
-    return CallAsChildThreadCmd(is_const, func, args)
+    return CallAsChildThreadCmd(options.is_const, func, args)
 
 @dataclass 
 class CallVarCmd:
@@ -261,7 +213,7 @@ class CallVarCmd:
     func: Var | int
     args: list[Expr | Var | int]
 
-def read_call_var_cmd(arr: enumerate[int], symbol_ids: SymbolIds, opcode: int, is_const: bool) -> CallVarCmd:
+def read_call_var_cmd(arr: enumerate[int], symbol_ids: SymbolIds, options: ReadCmdOptions) -> CallVarCmd:
     func_int = next(arr)[1]
     func = symbol_ids.get(func_int)
     assert isinstance(func, Var) or isinstance(func, int)
@@ -271,13 +223,13 @@ def read_call_var_cmd(arr: enumerate[int], symbol_ids: SymbolIds, opcode: int, i
         if value == 0x11:
             break
         
-        if is_const:
+        if options.is_const:
             var = symbol_ids.get(value)
             args.append(var)
         else:
             args.append(read_expr(value, arr, symbol_ids))
     
-    return CallVarCmd(is_const, func, args)
+    return CallVarCmd(options.is_const, func, args)
 
 @dataclass
 class SetCmd:
@@ -285,34 +237,34 @@ class SetCmd:
     destination: Var | int
     value: Expr | Var | int
 
-def read_set_cmd(arr: enumerate[int], symbol_ids: SymbolIds, opcode: int, is_const: bool) -> SetCmd:
+def read_set_cmd(arr: enumerate[int], symbol_ids: SymbolIds, options: ReadCmdOptions) -> SetCmd:
     destination_int = next(arr)[1]
     destination = symbol_ids.get(destination_int)
     assert isinstance(destination, Var) or isinstance(destination, int)
     
-    if is_const:
+    if options.is_const:
         value_int = next(arr)[1]
         value = symbol_ids.get(value_int)
         assert isinstance(value, Var) or isinstance(value, int)
         if value == 0x40:
-            value = Expr([])
+            value = Expr()
     else:
         value = read_expr(None, arr, symbol_ids)
     
-    return SetCmd(is_const, destination, value)
+    return SetCmd(options.is_const, destination, value)
 
 @dataclass
 class ReadTableLengthCmd:
     is_const: bool
     arrayt: Table
 
-def read_read_table_length_cmd(arr: enumerate[int], symbol_ids: SymbolIds, opcode: int, is_const: bool) -> ReadTableLengthCmd:
-    assert not is_const
+def read_read_table_length_cmd(arr: enumerate[int], symbol_ids: SymbolIds, options: ReadCmdOptions) -> ReadTableLengthCmd:
+    assert not options.is_const
     
     arrayt_int = next(arr)[1]
     arrayt = symbol_ids.get(arrayt_int)
     
-    return ReadTableLengthCmd(is_const, arrayt)
+    return ReadTableLengthCmd(options.is_const, arrayt)
 
 # returns the value to FuncVar0 by default (but other variables can be set to whatever it returns directly)
 @dataclass
@@ -321,15 +273,15 @@ class ReadTableEntryCmd:
     arrayt: Table
     index: Expr | Var | int
 
-def read_read_table_entry_cmd(arr: enumerate[int], symbol_ids: SymbolIds, opcode: int, is_const: bool) -> ReadTableEntryCmd:
-    assert not is_const
+def read_read_table_entry_cmd(arr: enumerate[int], symbol_ids: SymbolIds, options: ReadCmdOptions) -> ReadTableEntryCmd:
+    assert not options.is_const
     
     arrayt_int = next(arr)[1]
     arrayt = symbol_ids.get(arrayt_int)
     index_int = next(arr)[1]
     index = symbol_ids.get(index_int)
     
-    return ReadTableEntryCmd(is_const, arrayt, index)
+    return ReadTableEntryCmd(options.is_const, arrayt, index)
 
 # this is just like ReadTableEntryCmd, 
 # but the variable that the value returned to is specified in the parameters of this instruction
@@ -342,8 +294,8 @@ class ReadTableEntryToVarCmd:
     index: Expr | Var | int
     var: Var
 
-def read_read_table_entry_to_var_cmd(arr: enumerate[int], symbol_ids: SymbolIds, opcode: int, is_const: bool) -> ReadTableEntryToVarCmd:
-    assert not is_const
+def read_read_table_entry_to_var_cmd(arr: enumerate[int], symbol_ids: SymbolIds, options: ReadCmdOptions) -> ReadTableEntryToVarCmd:
+    assert not options.is_const
     
     arrayt_int = next(arr)[1]
     arrayt = symbol_ids.get(arrayt_int)
@@ -353,7 +305,7 @@ def read_read_table_entry_to_var_cmd(arr: enumerate[int], symbol_ids: SymbolIds,
     var = symbol_ids.get(var_int)
     assert isinstance(var, Var)
     
-    return ReadTableEntryToVarCmd(is_const, arrayt, index, var)
+    return ReadTableEntryToVarCmd(options.is_const, arrayt, index, var)
 
 # read 2 entries starting from the specified index and save those values to 2 specified variables. 
 # Used to read 2d vector values without having to call ReadTableEntry 2 times.
@@ -365,8 +317,8 @@ class ReadTableEntriesVec2Cmd:
     x: Var
     y: Var
 
-def read_read_table_entries_vec2_cmd(arr: enumerate[int], symbol_ids: SymbolIds, opcode: int, is_const: bool) -> ReadTableEntriesVec2Cmd:
-    assert not is_const
+def read_read_table_entries_vec2_cmd(arr: enumerate[int], symbol_ids: SymbolIds, options: ReadCmdOptions) -> ReadTableEntriesVec2Cmd:
+    assert not options.is_const
     
     arrayt_int = next(arr)[1]
     arrayt = symbol_ids.get(arrayt_int)
@@ -381,7 +333,7 @@ def read_read_table_entries_vec2_cmd(arr: enumerate[int], symbol_ids: SymbolIds,
     assert isinstance(x, Var)
     assert isinstance(y, Var)
     
-    return ReadTableEntriesVec2Cmd(is_const, arrayt, index, x, y)
+    return ReadTableEntriesVec2Cmd(options.is_const, arrayt, index, x, y)
 
 # read 3 entries starting from the specified index and save those values to 3 specified variables. 
 # Used to read 3d vector values without having to call ReadTableEntry 3 times.
@@ -394,8 +346,8 @@ class ReadTableEntriesVec3Cmd:
     y: Var
     z: Var
 
-def read_read_table_entries_vec3_cmd(arr: enumerate[int], symbol_ids: SymbolIds, opcode: int, is_const: bool) -> ReadTableEntriesVec3Cmd:
-    assert not is_const
+def read_read_table_entries_vec3_cmd(arr: enumerate[int], symbol_ids: SymbolIds, options: ReadCmdOptions) -> ReadTableEntriesVec3Cmd:
+    assert not options.is_const
     
     arrayt_int = next(arr)[1]
     arrayt = symbol_ids.get(arrayt_int)
@@ -413,7 +365,7 @@ def read_read_table_entries_vec3_cmd(arr: enumerate[int], symbol_ids: SymbolIds,
     assert isinstance(y, Var)
     assert isinstance(z, Var)
     
-    return ReadTableEntriesVec3Cmd(is_const, arrayt, index, x, y, z)
+    return ReadTableEntriesVec3Cmd(options.is_const, arrayt, index, x, y, z)
 @dataclass
 class TableGetIndexCmd:
     is_const: bool
@@ -421,8 +373,8 @@ class TableGetIndexCmd:
     occurance: Expr | Var | int
     var: Var
 
-def read_table_get_index_cmd(arr: enumerate[int], symbol_ids: SymbolIds, opcode: int, is_const: bool) -> TableGetIndexCmd:
-    assert not is_const
+def read_table_get_index_cmd(arr: enumerate[int], symbol_ids: SymbolIds, options: ReadCmdOptions) -> TableGetIndexCmd:
+    assert not options.is_const
     
     arrayt_int = next(arr)[1]
     arrayt = symbol_ids.get(arrayt_int)
@@ -432,14 +384,14 @@ def read_table_get_index_cmd(arr: enumerate[int], symbol_ids: SymbolIds, opcode:
     var = symbol_ids.get(var_int)
     assert isinstance(var, Var)
     
-    return TableGetIndexCmd(is_const, arrayt, occurance, var)
+    return TableGetIndexCmd(options.is_const, arrayt, occurance, var)
 
 @dataclass
 class ReturnCmd:
     pass
 
-def read_return_cmd(arr: enumerate[int], symbol_ids: SymbolIds, opcode: int, is_const: bool) -> ReturnCmd:
-    assert not is_const
+def read_return_cmd(arr: enumerate[int], symbol_ids: SymbolIds, options: ReadCmdOptions) -> ReturnCmd:
+    assert not options.is_const
     
     # A new layer gets pushed to in child threads (Thread and Thread2) for captured vars
     # Return ends a thread so it gets popped again
@@ -452,8 +404,8 @@ class GetArgsCmd:
     func: 'FunctionDef'
     args: list[Var | int]
 
-def read_get_args_cmd(arr: enumerate[int], symbol_ids: SymbolIds, opcode: int, is_const: bool) -> GetArgsCmd:
-    assert not is_const
+def read_get_args_cmd(arr: enumerate[int], symbol_ids: SymbolIds, options: ReadCmdOptions) -> GetArgsCmd:
+    assert not options.is_const
     
     func_int = next(arr)[1]
     func = symbol_ids.get(func_int)
@@ -477,8 +429,8 @@ class IfCmd:
     jump_to: int
     unused2: int
 
-def read_if_cmd(arr: enumerate[int], symbol_ids: SymbolIds, opcode: int, is_const: bool) -> IfCmd:
-    assert not is_const
+def read_if_cmd(arr: enumerate[int], symbol_ids: SymbolIds, options: ReadCmdOptions) -> IfCmd:
+    assert not options.is_const
     
     condition = read_expr(None, arr, symbol_ids)
     unused1 = next(arr)[1]
@@ -495,8 +447,8 @@ class IfEqualCmd:
     var2: Expr | Var | int
     jump_to: int # TODO: ensure that jump_to always points to an Else, ElseIf or EndIf
 
-def read_ifequal_cmd(arr: enumerate[int], symbol_ids: SymbolIds, opcode: int, is_const: bool) -> IfEqualCmd:
-    assert not is_const
+def read_ifequal_cmd(arr: enumerate[int], symbol_ids: SymbolIds, options: ReadCmdOptions) -> IfEqualCmd:
+    assert not options.is_const
     
     var1_int = next(arr)[1]
     var1 = symbol_ids.get(var1_int)
@@ -512,8 +464,8 @@ class IfNotEqualCmd:
     var2: Expr | Var | int
     jump_to: int
 
-def read_ifnotequal_cmd(arr: enumerate[int], symbol_ids: SymbolIds, opcode: int, is_const: bool) -> IfNotEqualCmd:
-    assert not is_const
+def read_ifnotequal_cmd(arr: enumerate[int], symbol_ids: SymbolIds, options: ReadCmdOptions) -> IfNotEqualCmd:
+    assert not options.is_const
     
     var1_int = next(arr)[1]
     var1 = symbol_ids.get(var1_int)
@@ -532,8 +484,8 @@ class ElseIfCmd:
     jump_to: int
     unused3: int
 
-def read_else_if_cmd(arr: enumerate[int], symbol_ids: SymbolIds, opcode: int, is_const: bool) -> ElseIfCmd:
-    assert not is_const
+def read_else_if_cmd(arr: enumerate[int], symbol_ids: SymbolIds, options: ReadCmdOptions) -> ElseIfCmd:
+    assert not options.is_const
     
     start_from = next(arr)[1]
     unused1 = next(arr)[1]
@@ -548,8 +500,8 @@ def read_else_if_cmd(arr: enumerate[int], symbol_ids: SymbolIds, opcode: int, is
 class ElseCmd:
     jump_to: int
 
-def read_else_cmd(arr: enumerate[int], symbol_ids: SymbolIds, opcode: int, is_const: bool) -> ElseCmd:
-    assert not is_const
+def read_else_cmd(arr: enumerate[int], symbol_ids: SymbolIds, options: ReadCmdOptions) -> ElseCmd:
+    assert not options.is_const
     
     jump_to = next(arr)[1]
     
@@ -559,8 +511,8 @@ def read_else_cmd(arr: enumerate[int], symbol_ids: SymbolIds, opcode: int, is_co
 class GotoLabelCmd:
     label: Label | int
 
-def read_goto_label_cmd(arr: enumerate[int], symbol_ids: SymbolIds, opcode: int, is_const: bool) -> GotoLabelCmd:
-    assert not is_const
+def read_goto_label_cmd(arr: enumerate[int], symbol_ids: SymbolIds, options: ReadCmdOptions) -> GotoLabelCmd:
+    assert not options.is_const
     
     label_int = next(arr)[1]
     label = symbol_ids.get(label_int)
@@ -572,17 +524,17 @@ def read_goto_label_cmd(arr: enumerate[int], symbol_ids: SymbolIds, opcode: int,
 class NoopCmd:
     opcode: int
 
-def read_noop_cmd(arr: enumerate[int], symbol_ids: SymbolIds, opcode: int, is_const: bool) -> NoopCmd:
-    assert not is_const
+def read_noop_cmd(arr: enumerate[int], symbol_ids: SymbolIds, options: ReadCmdOptions) -> NoopCmd:
+    assert not options.is_const
     
-    return NoopCmd(opcode)
+    return NoopCmd(options.opcode)
 
 @dataclass
 class LabelCmd:
     pass
 
-def read_label_cmd(arr: enumerate[int], symbol_ids: SymbolIds, opcode: int, is_const: bool) -> LabelCmd:
-    assert not is_const
+def read_label_cmd(arr: enumerate[int], symbol_ids: SymbolIds, options: ReadCmdOptions) -> LabelCmd:
+    assert not options.is_const
     
     return LabelCmd()
 
@@ -590,19 +542,19 @@ def read_label_cmd(arr: enumerate[int], symbol_ids: SymbolIds, opcode: int, is_c
 class EndIfCmd:
     pass
 
-def read_endif_cmd(arr: enumerate[int], symbol_ids: SymbolIds, opcode: int, is_const: bool) -> EndIfCmd:
-    assert not is_const
+def read_endif_cmd(arr: enumerate[int], symbol_ids: SymbolIds, options: ReadCmdOptions) -> EndIfCmd:
+    assert not options.is_const
     
     return EndIfCmd()
 
 @dataclass
 class ThreadCmd:
-    func: 'FunctionDef | FunctionImport | int'
+    func: 'FunctionDef | ScriptImport | int'
     take_args: list[int]
     give_args: list[Var | int]
 
-def read_thread_cmd(arr: enumerate[int], symbol_ids: SymbolIds, opcode: int, is_const: bool) -> ThreadCmd:
-    assert not is_const
+def read_thread_cmd(arr: enumerate[int], symbol_ids: SymbolIds, options: ReadCmdOptions) -> ThreadCmd:
+    assert not options.is_const
     
     func_int = next(arr)[1]
     func = symbol_ids.get(func_int)
@@ -644,12 +596,12 @@ def read_thread_cmd(arr: enumerate[int], symbol_ids: SymbolIds, opcode: int, is_
 
 @dataclass
 class Thread2Cmd:
-    func: 'FunctionDef | FunctionImport | int'
+    func: 'FunctionDef | ScriptImport | int'
     take_args: list[int]
     give_args: list[Var | int]
 
-def read_thread2_cmd(arr: enumerate[int], symbol_ids: SymbolIds, opcode: int, is_const: bool) -> Thread2Cmd:
-    assert not is_const
+def read_thread2_cmd(arr: enumerate[int], symbol_ids: SymbolIds, options: ReadCmdOptions) -> Thread2Cmd:
+    assert not options.is_const
     
     func_int = next(arr)[1]
     func = symbol_ids.get(func_int)
@@ -692,43 +644,43 @@ class DeleteRuntimeCmd:
     is_const: bool
     var: Expr | Var | int
 
-def read_delete_runtime_cmd(arr: enumerate[int], symbol_ids: SymbolIds, opcode: int, is_const: bool) -> DeleteRuntimeCmd:
+def read_delete_runtime_cmd(arr: enumerate[int], symbol_ids: SymbolIds, options: ReadCmdOptions) -> DeleteRuntimeCmd:
     var_int = next(arr)[1]
     var = symbol_ids.get(var_int)
-    if is_const:
+    if options.is_const:
         assert isinstance(var, Var) or isinstance(var, int)
     
-    return DeleteRuntimeCmd(is_const, var)
+    return DeleteRuntimeCmd(options.is_const, var)
 
 @dataclass
 class WaitCmd:
     is_const: bool
     duration: Expr | Var | int
 
-def read_wait_cmd(arr: enumerate[int], symbol_ids: SymbolIds, opcode: int, is_const: bool) -> WaitCmd:
-    if is_const:
+def read_wait_cmd(arr: enumerate[int], symbol_ids: SymbolIds, options: ReadCmdOptions) -> WaitCmd:
+    if options.is_const:
         duration_int = next(arr)[1]
         duration = symbol_ids.get(duration_int)
         assert isinstance(duration, Var) or isinstance(duration, int)
     else:
         duration = read_expr(None, arr, symbol_ids)
     
-    return WaitCmd(is_const, duration)
+    return WaitCmd(options.is_const, duration)
 
 @dataclass
 class WaitMsCmd:
     is_const: bool
     duration: Expr | Var | int
 
-def read_wait_ms_cmd(arr: enumerate[int], symbol_ids: SymbolIds, opcode: int, is_const: bool) -> WaitMsCmd:
-    if is_const:
+def read_wait_ms_cmd(arr: enumerate[int], symbol_ids: SymbolIds, options: ReadCmdOptions) -> WaitMsCmd:
+    if options.is_const:
         duration_int = next(arr)[1]
         duration = symbol_ids.get(duration_int)
         assert isinstance(duration, Var) or isinstance(duration, int)
     else:
         duration = read_expr(None, arr, symbol_ids)
     
-    return WaitMsCmd(is_const, duration)
+    return WaitMsCmd(options.is_const, duration)
 
 @dataclass
 class SwitchCmd:
@@ -736,8 +688,8 @@ class SwitchCmd:
     unused: int
     jump_offset: int
 
-def read_switch_cmd(arr: enumerate[int], symbol_ids: SymbolIds, opcode: int, is_const: bool) -> SwitchCmd:
-    assert not is_const
+def read_switch_cmd(arr: enumerate[int], symbol_ids: SymbolIds, options: ReadCmdOptions) -> SwitchCmd:
+    assert not options.is_const
 
     var_int = next(arr)[1]
     var = symbol_ids.get(var_int)
@@ -754,10 +706,9 @@ class CaseEqCmd:
     value: Expr | Var | int
     jump_offset: int
 
-def read_case_eq_cmd(arr: enumerate[int], symbol_ids: SymbolIds, opcode: int, is_const: bool) -> CaseEqCmd:
-    
+def read_case_eq_cmd(arr: enumerate[int], symbol_ids: SymbolIds, options: ReadCmdOptions) -> CaseEqCmd:
     value_int = next(arr)[1]
-    if is_const:
+    if options.is_const:
         value = symbol_ids.get(value_int)
         assert isinstance(value, Var) or isinstance(value, int)
     else:
@@ -765,7 +716,7 @@ def read_case_eq_cmd(arr: enumerate[int], symbol_ids: SymbolIds, opcode: int, is
     
     jump_offset = next(arr)[1]
     
-    return CaseEqCmd(is_const, value, jump_offset)
+    return CaseEqCmd(options.is_const, value, jump_offset)
 
 # A variant of the switch instruction that seems to also take two floating point values...
 # It being a check as to whether the match value is within this range is just a guess.
@@ -776,17 +727,17 @@ class CaseRangeCmd:
     upper: Expr | Var | int
     jump_offset: int
 
-def read_case_range_cmd(arr: enumerate[int], symbol_ids: SymbolIds, opcode: int, is_const: bool) -> CaseRangeCmd:
+def read_case_range_cmd(arr: enumerate[int], symbol_ids: SymbolIds, options: ReadCmdOptions) -> CaseRangeCmd:
     
     lower_int = next(arr)[1]
-    if is_const:
+    if options.is_const:
         lower = symbol_ids.get(lower_int)
         assert isinstance(lower, Var) or isinstance(lower, int)
     else:
         lower = symbol_ids.get(lower_int)
         
     upper_int = next(arr)[1]
-    if is_const:
+    if options.is_const:
         upper = symbol_ids.get(upper_int)
         assert isinstance(upper, Var) or isinstance(upper, int)
     else:
@@ -794,14 +745,14 @@ def read_case_range_cmd(arr: enumerate[int], symbol_ids: SymbolIds, opcode: int,
     
     jump_offset = next(arr)[1]
     
-    return CaseRangeCmd(is_const, lower, upper, jump_offset)
+    return CaseRangeCmd(options.is_const, lower, upper, jump_offset)
 
 @dataclass
 class BreakSwitchCmd:
     pass
 
-def read_breakswitch_cmd(arr: enumerate[int], symbol_ids: SymbolIds, opcode: int, is_const: bool) -> BreakSwitchCmd:
-    assert not is_const
+def read_breakswitch_cmd(arr: enumerate[int], symbol_ids: SymbolIds, options: ReadCmdOptions) -> BreakSwitchCmd:
+    assert not options.is_const
     
     return BreakSwitchCmd()
 
@@ -809,8 +760,8 @@ def read_breakswitch_cmd(arr: enumerate[int], symbol_ids: SymbolIds, opcode: int
 class EndSwitchCmd:
     pass
 
-def read_endswitch_cmd(arr: enumerate[int], symbol_ids: SymbolIds, opcode: int, is_const: bool) -> EndSwitchCmd:
-    assert not is_const
+def read_endswitch_cmd(arr: enumerate[int], symbol_ids: SymbolIds, options: ReadCmdOptions) -> EndSwitchCmd:
+    assert not options.is_const
     
     return EndSwitchCmd()
 
@@ -820,9 +771,8 @@ class WhileCmd:
     value: Expr | Var | int
     jump_offset: int
 
-def read_while_cmd(arr: enumerate[int], symbol_ids: SymbolIds, opcode: int, is_const: bool) -> WhileCmd:
-    
-    if is_const:
+def read_while_cmd(arr: enumerate[int], symbol_ids: SymbolIds, options: ReadCmdOptions) -> WhileCmd:
+    if options.is_const:
         value_int = next(arr)[1]
         value = symbol_ids.get(value_int)
         assert isinstance(value, Var) or isinstance(value, int)
@@ -831,14 +781,14 @@ def read_while_cmd(arr: enumerate[int], symbol_ids: SymbolIds, opcode: int, is_c
     
     jump_offset = next(arr)[1]
     
-    return WhileCmd(is_const, value, jump_offset)
+    return WhileCmd(options.is_const, value, jump_offset)
 
 @dataclass
 class BreakCmd:
     pass
 
-def read_break_cmd(arr: enumerate[int], symbol_ids: SymbolIds, opcode: int, is_const: bool) -> BreakCmd:
-    assert not is_const
+def read_break_cmd(arr: enumerate[int], symbol_ids: SymbolIds, options: ReadCmdOptions) -> BreakCmd:
+    assert not options.is_const
     
     return BreakCmd()
 
@@ -846,8 +796,8 @@ def read_break_cmd(arr: enumerate[int], symbol_ids: SymbolIds, opcode: int, is_c
 class EndWhileCmd:
     pass
 
-def read_end_while_cmd(arr: enumerate[int], symbol_ids: SymbolIds, opcode: int, is_const: bool) -> EndWhileCmd:
-    assert not is_const
+def read_end_while_cmd(arr: enumerate[int], symbol_ids: SymbolIds, options: ReadCmdOptions) -> EndWhileCmd:
+    assert not options.is_const
     
     return EndWhileCmd()
 
@@ -856,15 +806,15 @@ class WaitCompletedCmd:
     is_const: bool
     runtime: Expr | Var | int
 
-def read_wait_completed_cmd(arr: enumerate[int], symbol_ids: SymbolIds, opcode: int, is_const: bool) -> WaitCompletedCmd:
-    if is_const:
+def read_wait_completed_cmd(arr: enumerate[int], symbol_ids: SymbolIds, options: ReadCmdOptions) -> WaitCompletedCmd:
+    if options.is_const:
         runtime_int = next(arr)[1]
         runtime = symbol_ids.get(runtime_int)
         assert isinstance(runtime, Var) or isinstance(runtime, int)
     else:
         runtime = read_expr(None, arr, symbol_ids)
     
-    return WaitCompletedCmd(is_const, runtime)
+    return WaitCompletedCmd(options.is_const, runtime)
 
 @dataclass
 class WaitWhileCmd:
@@ -872,8 +822,8 @@ class WaitWhileCmd:
     unused1: int
     unused2: int
 
-def read_wait_while_cmd(arr: enumerate[int], symbol_ids: SymbolIds, opcode: int, is_const: bool) -> WaitWhileCmd:
-    assert not is_const
+def read_wait_while_cmd(arr: enumerate[int], symbol_ids: SymbolIds, options: ReadCmdOptions) -> WaitWhileCmd:
+    assert not options.is_const
     
     condition = read_expr(None, arr, symbol_ids)
     unused1 = next(arr)[1]
@@ -885,8 +835,8 @@ def read_wait_while_cmd(arr: enumerate[int], symbol_ids: SymbolIds, opcode: int,
 class ToIntCmd:
     variable: Var | int
 
-def read_to_int_cmd(arr: enumerate[int], symbol_ids: SymbolIds, opcode: int, is_const: bool) -> ToIntCmd:
-    assert not is_const
+def read_to_int_cmd(arr: enumerate[int], symbol_ids: SymbolIds, options: ReadCmdOptions) -> ToIntCmd:
+    assert not options.is_const
     
     var_int = next(arr)[1]
     var = symbol_ids.get(var_int)
@@ -897,8 +847,8 @@ def read_to_int_cmd(arr: enumerate[int], symbol_ids: SymbolIds, opcode: int, is_
 class LoadKSMCmd:
     variable: Var | int
 
-def read_load_ksm_cmd(arr: enumerate[int], symbol_ids: SymbolIds, opcode: int, is_const: bool) -> LoadKSMCmd:
-    assert not is_const
+def read_load_ksm_cmd(arr: enumerate[int], symbol_ids: SymbolIds, options: ReadCmdOptions) -> LoadKSMCmd:
+    assert not options.is_const
     
     var_int = next(arr)[1]
     var = symbol_ids.get(var_int)
@@ -909,8 +859,8 @@ def read_load_ksm_cmd(arr: enumerate[int], symbol_ids: SymbolIds, opcode: int, i
 class GetArgCountCmd:
     pass
 
-def read_get_arg_count_cmd(arr: enumerate[int], symbol_ids: SymbolIds, opcode: int, is_const: bool) -> GetArgCountCmd:
-    assert not is_const
+def read_get_arg_count_cmd(arr: enumerate[int], symbol_ids: SymbolIds, options: ReadCmdOptions) -> GetArgCountCmd:
+    assert not options.is_const
     
     return GetArgCountCmd()
 
@@ -920,10 +870,10 @@ class CaseLteCmd:
     value: Expr | Var | int
     jump_offset: int
 
-def read_case_lte_cmd(arr: enumerate[int], symbol_ids: SymbolIds, opcode: int, is_const: bool) -> CaseLteCmd:
+def read_case_lte_cmd(arr: enumerate[int], symbol_ids: SymbolIds, options: ReadCmdOptions) -> CaseLteCmd:
     
     value_int = next(arr)[1]
-    if is_const:
+    if options.is_const:
         value = symbol_ids.get(value_int)
         assert isinstance(value, Var) or isinstance(value, int)
     else:
@@ -931,7 +881,7 @@ def read_case_lte_cmd(arr: enumerate[int], symbol_ids: SymbolIds, opcode: int, i
     
     jump_offset = next(arr)[1]
     
-    return CaseLteCmd(is_const, value, jump_offset)
+    return CaseLteCmd(options.is_const, value, jump_offset)
 
 @dataclass
 class UnknownCmd:
@@ -939,16 +889,19 @@ class UnknownCmd:
     is_const: bool
     args: list[Expr | Var | int]
 
-def read_unknown_cmd(arr: enumerate[int], symbol_ids: SymbolIds, opcode: int, is_const: bool) -> UnknownCmd:
+def read_unknown_cmd(arr: enumerate[int], symbol_ids: SymbolIds, options: ReadCmdOptions) -> UnknownCmd:
     args = []
     for _, value in arr:
         if value == 0x11:
             break
         
-        var = symbol_ids.get(value)
+        if value in EXPR_SYMBOLS:
+            var = EXPR_SYMBOLS[value]
+        else:
+            var = symbol_ids.get(value)
         args.append(var)
     
-    return UnknownCmd(opcode, is_const, args)
+    return UnknownCmd(options.opcode, options.is_const, args)
 
 INSTRUCTIONS = {
     # TODO: some of the noops return 1, some 3, might be worth looking into
@@ -983,7 +936,7 @@ INSTRUCTIONS = {
     0x37: read_breakswitch_cmd,
     0x38: read_endswitch_cmd,
     
-    # DoWhile Instructions
+    # While Instructions
     0x39: read_while_cmd,
     0x3a: read_break_cmd,
     0x3c: read_end_while_cmd,
@@ -1021,10 +974,11 @@ class FunctionDef:
     id: int
     is_public: int
     field_0xc: int
-    field_0x30: int # some variable's handle?
+    return_var: int
     field_0x34: int
     
     code: array
+    code_offset: int
     instructions: list | None
     
     vars: list[Var]
@@ -1048,7 +1002,7 @@ def read_function_definitions(section: bytes, code_section: bytes) -> list[Funct
         field_0xc = next(arr)[1]
         code_offset = next(arr)[1]
         code_end = next(arr)[1]
-        field_0x30 = next(arr)[1]
+        return_var = next(arr)[1]
         field_0x34 = next(arr)[1]
         
         code = code_section_arr[code_offset + 1:code_end + 1]
@@ -1081,7 +1035,7 @@ def read_function_definitions(section: bytes, code_section: bytes) -> list[Funct
         for _ in range(next(arr)[1]):
             labels.append(read_label(arr, section))
         
-        definitions.append(FunctionDef(name, id, is_public, field_0xc, field_0x30, field_0x34, code, None, variables, tables, labels))
+        definitions.append(FunctionDef(name, id, is_public, field_0xc, return_var, field_0x34, code, code_offset, None, variables, tables, labels))
     
     assert len(definitions) == count
     return definitions
@@ -1090,10 +1044,12 @@ def analyze_function_def(fn: FunctionDef, symbol_ids: SymbolIds):
     arr = enumerate(fn.code)
     instructions = []
     
-    for _, value in arr:
+    for i, value in arr:
         try:
+            options = ReadCmdOptions(value & 0xfffffeff, value & 0x100 != 0, fn.code_offset + i * 4)
+            
             if value & 0xfffffeff in INSTRUCTIONS:
-                instruction = INSTRUCTIONS[value & 0xfffffeff](arr, symbol_ids, value & 0xfffffeff, value & 0x100 != 0)
+                instruction = INSTRUCTIONS[value & 0xfffffeff](arr, symbol_ids, options)
                 
                 match instruction:
                     case ThreadCmd(func):
@@ -1105,21 +1061,21 @@ def analyze_function_def(fn: FunctionDef, symbol_ids: SymbolIds):
                 
                 instructions.append(instruction)
             else:
-                instructions.append(read_unknown_cmd(arr, symbol_ids, value & 0xfffffeff, value & 0x100 != 0))
+                instructions.append(read_unknown_cmd(arr, symbol_ids, options))
         except StopIteration:
             pass
     
     fn.instructions = instructions
 
 def print_function_def(fn: FunctionDef) -> str:
-    field_0x30_var = next((var for var in fn.vars if var.id == fn.field_0x30), None)
-    field_0x30 = print_expr_or_var(field_0x30_var) if field_0x30_var is not None else hex(fn.field_0x30)
+    return_var_var = next((var for var in fn.vars if var.id == fn.return_var), None)
+    return_var = print_expr_or_var(return_var_var) if return_var_var is not None else hex(fn.return_var)
     
     result = f"""  - name: {fn.name if fn.name != None else 'null'}
     id: 0x{fn.id:x}
     is_public: {fn.is_public}
     field_0xc: 0x{fn.field_0xc:x}
-    field_0x30: {field_0x30} # return value / accumulator?
+    return_var: {return_var}
     field_0x34: 0x{fn.field_0x34:x}\n"""
     
     if fn.vars and len(fn.vars) > 0:

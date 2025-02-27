@@ -46,38 +46,9 @@ def main():
     with open(argv[1], 'rb') as f:
         input_file = f.read()
     
-    # predefined symbol ids for expressions (incomplete)
-    symbol_ids = SymbolIds()
-    
-    # TODO: make these only available in expressions and not outside
-    # TODO: what is next_function?
-    symbol_ids.add('next_function', id=0x3f)
-    symbol_ids.add('(', id=0x41)
-    symbol_ids.add(')', id=0x42)
-    symbol_ids.add('||', id=0x43)
-    symbol_ids.add('&&', id=0x44)    
-    
-    symbol_ids.add('|', id=0x45)
-    symbol_ids.add('&', id=0x46)
-    symbol_ids.add('^', id=0x47)
-    symbol_ids.add('<<', id=0x48)
-    symbol_ids.add('>>', id=0x49)
-    
-    symbol_ids.add('==', id=0x4a)
-    symbol_ids.add('!=', id=0x4b)
-    symbol_ids.add('>', id=0x4c)
-    symbol_ids.add('<', id=0x4d)
-    symbol_ids.add('>=', id=0x4e)
-    symbol_ids.add('<=', id=0x4f)
-    
-    symbol_ids.add('%', id=0x52)
-    symbol_ids.add('+', id=0x53)
-    symbol_ids.add('-', id=0x54)
-    symbol_ids.add('*', id=0x55)
-    symbol_ids.add('/', id=0x56)
-    
     sections = read_ksm_container(input_file)
     
+    symbol_ids = SymbolIds()
     write_variables(sections, symbol_ids)
     
     # output main yaml

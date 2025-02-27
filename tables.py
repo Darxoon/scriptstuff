@@ -2,14 +2,8 @@ from array import array
 from dataclasses import dataclass
 from enum import Enum
 from sys import argv
-from util import SymbolIds
+from util import SymbolIds, read_string
 from variables import Var, VarCategory
-
-def read_string(section: bytes, offset_words: int) -> str:
-    buffer = section[offset_words * 4:]
-    bytelen = buffer.index(0)
-    return str(buffer[:bytelen], 'utf-8')
-
 
 class TableDataType(Enum):
     Var = 0

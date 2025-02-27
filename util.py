@@ -1,5 +1,10 @@
 from typing import Any
 
+def read_string(section: bytes, offset_words: int) -> str:
+    buffer = section[offset_words * 4:]
+    bytelen = buffer.index(0)
+    return str(buffer[:bytelen], 'utf-8')
+
 class SymbolIds:
     layers: list[dict]
     

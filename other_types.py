@@ -60,10 +60,11 @@ def print_function_import(fn: ScriptImport) -> str:
 @dataclass
 class Label:
     name: str | None
+    alias: str | None
     id: int
     code_offset: int
 
-def read_label(arr: enumerate[int], section: bytes):
+def read_label(arr: enumerate[int], section: bytes) -> Label:
     offset, value = next(arr)
     id = next(arr)[1]
     code_offset = next(arr)[1]
@@ -77,9 +78,17 @@ def read_label(arr: enumerate[int], section: bytes):
         assert value == 0
         name = None
     
-    return Label(name, id, code_offset)
+    return Label(name, None, id, code_offset)
 
 def print_label(label: Label) -> str:
-    return f"""      - name: {label.name if label.name != None else 'null'}
-        id: 0x{label.id:x}
+    out_str = "      - "
+    
+    if label.name is not None:
+        out_str += f"name: {label.name}\n        "
+    if label.alias is not None:
+        out_str += f"alias: {label.alias}\n        "
+    
+    out_str += f"""id: 0x{label.id:x}
         code_offset: 0x{label.code_offset:x}\n"""
+    
+    return out_str

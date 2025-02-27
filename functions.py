@@ -1,8 +1,8 @@
 from array import array
 from dataclasses import dataclass, field, replace
-import dataclasses
 from itertools import chain
 import json
+from string import ascii_lowercase
 
 from other_types import Label, ScriptImport, print_function_import, print_label, read_function_imports, read_label
 from tables import Table, print_table, read_table
@@ -87,9 +87,11 @@ def print_expr_or_var(value, braces_around_expression = False) -> str:
                 return f"{category.name}:0x{id:x}"
         case ScriptImport(name) | FunctionDef(name):
             return f"fn:{name}"
-        case Label(name, id):
+        case Label(name, alias, id):
             if name is not None:
                 return f"label:{name}"
+            elif alias is not None:
+                return f"label:{alias}"
             else:
                 return f"label:{hex(id)}"
         case Table(name, id):
@@ -531,12 +533,14 @@ def read_noop_cmd(arr: enumerate[int], symbol_ids: SymbolIds, options: ReadCmdOp
 
 @dataclass
 class LabelCmd:
-    pass
+    offset: int
+    label: Label | None
 
 def read_label_cmd(arr: enumerate[int], symbol_ids: SymbolIds, options: ReadCmdOptions) -> LabelCmd:
     assert not options.is_const
+    assert options.cmd_offset is not None
     
-    return LabelCmd()
+    return LabelCmd(options.cmd_offset, None)
 
 @dataclass
 class EndIfCmd:
@@ -844,6 +848,18 @@ def read_to_int_cmd(arr: enumerate[int], symbol_ids: SymbolIds, options: ReadCmd
     return ToIntCmd(var)
 
 @dataclass
+class ToFloatCmd:
+    variable: Var | int
+
+def read_to_float_cmd(arr: enumerate[int], symbol_ids: SymbolIds, options: ReadCmdOptions) -> ToFloatCmd:
+    assert not options.is_const
+    
+    var_int = next(arr)[1]
+    var = symbol_ids.get(var_int)
+    
+    return ToFloatCmd(var)
+
+@dataclass
 class LoadKSMCmd:
     variable: Var | int
 
@@ -882,6 +898,28 @@ def read_case_lte_cmd(arr: enumerate[int], symbol_ids: SymbolIds, options: ReadC
     jump_offset = next(arr)[1]
     
     return CaseLteCmd(options.is_const, value, jump_offset)
+
+@dataclass
+class SetKSMUnkCmd:
+    is_const: bool
+    runtime: Var | int
+    value: Expr | Var | int
+
+def read_set_ksm_unk_cmd(arr: enumerate[int], symbol_ids: SymbolIds, options: ReadCmdOptions) -> SetKSMUnkCmd:
+    runtime_int = next(arr)[1]
+    runtime = symbol_ids.get(runtime_int)
+    assert isinstance(runtime, Var) or isinstance(runtime, int)
+    
+    if options.is_const:
+        value_int = next(arr)[1]
+        value = symbol_ids.get(value_int)
+        assert isinstance(value, Var) or isinstance(value, int)
+        if value == 0x40:
+            value = Expr()
+    else:
+        value = read_expr(None, arr, symbol_ids)
+    
+    return SetKSMUnkCmd(options.is_const, runtime, value)
 
 @dataclass
 class UnknownCmd:
@@ -952,6 +990,7 @@ INSTRUCTIONS = {
     0x6d: read_table_get_index_cmd,
     
     0x75: read_load_ksm_cmd,
+    0x76: read_set_ksm_unk_cmd,
     0x77: read_get_arg_count_cmd,
     
     # TODO: are these noops?
@@ -962,6 +1001,7 @@ INSTRUCTIONS = {
     # 0x81: read_call_var_as_thread,
     # 0x82: read_call_var_as_child_thread,
     0x85: read_to_int_cmd,
+    0x86: read_to_float_cmd,
     0x89: read_wait_completed_cmd,
     0x9f: read_wait_while_cmd,
 }
@@ -983,7 +1023,7 @@ class FunctionDef:
     
     vars: list[Var]
     tables: list[Table]
-    unk: list[Label]
+    labels: list[Label]
     
     # analysis
     thread_references: list['FunctionDef'] = field(default_factory=list)
@@ -1016,7 +1056,7 @@ def read_function_definitions(section: bytes, code_section: bytes) -> list[Funct
             assert value == 0
             name = None
         
-        variables = []
+        variables: list[Var] = []
         for i in range(next(arr)[1]):
             var = read_variable(arr, section, VarCategory.LocalVar)
             
@@ -1027,13 +1067,21 @@ def read_function_definitions(section: bytes, code_section: bytes) -> list[Funct
             variables.append(var)
         
         # TODO: table values don't work yet here
-        tables = []
+        tables: list[Table] = []
         for _ in range(next(arr)[1]):
             tables.append(read_table(arr, section))
         
-        labels = []
+        labels: list[Label] = []
         for _ in range(next(arr)[1]):
-            labels.append(read_label(arr, section))
+            label = read_label(arr, section)
+            
+            labels.append(label)
+        
+        # assign aliases to labels
+        alphabet = iter(ascii_lowercase)
+        for label in sorted(labels, key=lambda label: label.code_offset):
+            if label.name is None:
+                label.alias = next(alphabet, None)
         
         definitions.append(FunctionDef(name, id, is_public, field_0xc, return_var, field_0x34, code, code_offset, None, variables, tables, labels))
     
@@ -1041,12 +1089,19 @@ def read_function_definitions(section: bytes, code_section: bytes) -> list[Funct
     return definitions
 
 def analyze_function_def(fn: FunctionDef, symbol_ids: SymbolIds):
+    # cache labels by their offset
+    labels: dict[int, Label] = {}
+    
+    for label in fn.labels:
+        labels[label.code_offset] = label
+    
+    # parse instructions
     arr = enumerate(fn.code)
     instructions = []
     
     for i, value in arr:
         try:
-            options = ReadCmdOptions(value & 0xfffffeff, value & 0x100 != 0, fn.code_offset + i * 4)
+            options = ReadCmdOptions(value & 0xfffffeff, value & 0x100 != 0, fn.code_offset + i)
             
             if value & 0xfffffeff in INSTRUCTIONS:
                 instruction = INSTRUCTIONS[value & 0xfffffeff](arr, symbol_ids, options)
@@ -1058,6 +1113,9 @@ def analyze_function_def(fn: FunctionDef, symbol_ids: SymbolIds):
                     case Thread2Cmd(func):
                         if isinstance(func, FunctionDef) and func is not fn:
                             func.thread2_references.append(fn)
+                    case LabelCmd(offset):
+                        if offset in labels:
+                            instruction.label = labels[offset]
                 
                 instructions.append(instruction)
             else:
@@ -1086,9 +1144,9 @@ def print_function_def(fn: FunctionDef) -> str:
         result += "    \n    tables:\n"
         for table in fn.tables:
             result += print_table(table, 3)
-    if fn.unk and len(fn.unk) > 0:
+    if fn.labels and len(fn.labels) > 0:
         result += "    \n    labels:\n"
-        for var in fn.unk:
+        for var in fn.labels:
             result += print_label(var)
     
     if len(fn.thread_references) == 1 and len(fn.thread2_references) == 0:
@@ -1116,7 +1174,7 @@ def print_function_def(fn: FunctionDef) -> str:
             
             match inst:
                 case ReturnValCmd(is_const, var):
-                    value = f"ReturnVal{'*' if is_const else ' '} ( {print_expr_or_var(var)} )"
+                    value = f"ReturnVal{'*' if is_const else ' '} {print_expr_or_var(var)}"
                 case SetCmd(is_const, destination, source):
                     value = f"Set{'*' if is_const else ' '}  {print_expr_or_var(destination)} {print_expr_or_var(source, True)}"
                 case CallCmd(is_const, func, args):
@@ -1162,8 +1220,19 @@ def print_function_def(fn: FunctionDef) -> str:
                     value = f"GotoLabel {print_expr_or_var(label)}"
                 case NoopCmd(opcode):
                     value = f"Noop_{hex(opcode)}"
-                case LabelCmd():
-                    value = f"LabelPoint"
+                case LabelCmd(offset, label):
+                    if label is None:
+                        label_name = f"? (at {hex(offset)})"
+                    elif not isinstance(label, Label):
+                        label_name = print_expr_or_var(label)
+                    elif label.name is not None:
+                        label_name = label.name
+                    elif label.alias is not None:
+                        label_name = label.alias
+                    else:
+                        label_name = print_expr_or_var(label)
+                    
+                    value = f"Label {label_name}"
                 case ThreadCmd(func, take_args, give_args) | Thread2Cmd(func, take_args, give_args):
                     start_indented_block = True
                     
@@ -1228,10 +1297,14 @@ def print_function_def(fn: FunctionDef) -> str:
                     value = f"WaitWhile {print_expr_or_var(condition)}"
                 case ToIntCmd(var):
                     value = f"ToInt {print_expr_or_var(var)}"
+                case ToFloatCmd(var):
+                    value = f"ToFloat {print_expr_or_var(var)}"
                 case LoadKSMCmd(var):
                     value = f"LoadKSM {print_expr_or_var(var)}"
                 case GetArgCountCmd():
                     value = f"GetArgCount"
+                case SetKSMUnkCmd(is_const, destination, source):
+                    value = f"SetKSMUnk{'*' if is_const else ''} {print_expr_or_var(destination)} {print_expr_or_var(source, True)}"
                 case UnknownCmd(opcode, is_const, args):
                     value = f"Unk_0x{opcode:x}{'*' if is_const else ' '} ( {', '.join(print_expr_or_var(x) for x in args)} )"
                 case _:
@@ -1277,7 +1350,7 @@ def print_function_definitions(sections: list[bytes], symbol_ids: SymbolIds) -> 
                 local_symbol_ids.add(var)
             for table in fn.tables:
                 local_symbol_ids.add(table)
-            for unk in fn.unk:
+            for unk in fn.labels:
                 local_symbol_ids.add(unk)
             
             analyze_function_def(fn, local_symbol_ids)

@@ -1238,7 +1238,8 @@ def print_function_def(fn: FunctionDef) -> str:
                     
                     opcode = "Thread1" if isinstance(inst, ThreadCmd) else "Thread2"
                     if isinstance(func, FunctionDef):
-                        label_or_func = json.dumps(func.name[1:func.name.rindex('_')] if func.name is not None else func.name)
+                        name_start = 1 if func.name is not None and func.name.startswith('_') else 0
+                        label_or_func = json.dumps(func.name[name_start:func.name.rindex('_')] if func.name is not None else func.name)
                     else:
                         label_or_func = print_expr_or_var(func)
                     captures = ', '.join(print_expr_or_var(var) for var in give_args)

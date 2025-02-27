@@ -1,6 +1,7 @@
 from array import array
 from dataclasses import dataclass, field, replace
 from enum import Enum
+from itertools import chain
 import json
 
 from tables import Table, print_table, read_table
@@ -103,10 +104,9 @@ class Expr:
 def read_expr(initial_element: int | None, arr: enumerate[int], symbol_ids: SymbolIds, raise_on_ending_sequence = False) -> Expr:
     elements = []
     
-    if initial_element is not None:
-        elements.append(symbol_ids.get(initial_element))
+    values = chain([(0, initial_element)], arr) if initial_element is not None else arr
     
-    for _, value in arr:
+    for _, value in values:
         if value == 0x40:
             break
         

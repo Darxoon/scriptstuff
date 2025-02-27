@@ -134,10 +134,10 @@ def print_tables(sections: list[bytes], symbol_ids: SymbolIds) -> str:
     if len(tables) == 0:
         return ''
     
-    out_str = '\ntables:\n'
+    out_str = '\ntables:'
 
     for table in tables:
         symbol_ids.add(table)
-        out_str += print_table(table)
+        out_str += '\n' + print_table(table)
     
     return out_str

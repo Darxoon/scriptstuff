@@ -14,8 +14,9 @@ class VarCategory(Enum):
     Global = 2
     # function local
     TempVar = 3
-    ClearTempVar = 4
-    LocalVar = 5
+    OuterTempVar = 4 # used for captured temp vars
+    ClearTempVar = 5
+    LocalVar = 6
 
 def read_string(section: bytes, offset_words: int) -> str:
     buffer = section[offset_words * 4:]

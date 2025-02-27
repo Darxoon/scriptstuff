@@ -1,7 +1,7 @@
 from array import array
 from dataclasses import dataclass, field, replace
 from enum import Enum
-from sys import argv
+import json
 
 from tables import Table, print_table, read_table
 from util import SymbolIds
@@ -636,6 +636,8 @@ def read_thread_cmd(arr: enumerate[int], symbol_ids: SymbolIds, opcode: int, is_
         
         copy = replace(give)
         copy.id = take
+        if copy.category == VarCategory.TempVar:
+            copy.category = VarCategory.OuterTempVar
         symbol_ids.add(copy)
         
     return ThreadCmd(func, take_args, give_args)
@@ -747,12 +749,12 @@ def read_switch_cmd(arr: enumerate[int], symbol_ids: SymbolIds, opcode: int, is_
     return SwitchCmd(var, unused, jump_offset)
 
 @dataclass
-class CaseCmd:
+class CaseEqCmd:
     is_const: bool
     value: Expr | Var | int
     jump_offset: int
 
-def read_case_cmd(arr: enumerate[int], symbol_ids: SymbolIds, opcode: int, is_const: bool) -> CaseCmd:
+def read_case_eq_cmd(arr: enumerate[int], symbol_ids: SymbolIds, opcode: int, is_const: bool) -> CaseEqCmd:
     
     value_int = next(arr)[1]
     if is_const:
@@ -763,7 +765,7 @@ def read_case_cmd(arr: enumerate[int], symbol_ids: SymbolIds, opcode: int, is_co
     
     jump_offset = next(arr)[1]
     
-    return CaseCmd(is_const, value, jump_offset)
+    return CaseEqCmd(is_const, value, jump_offset)
 
 # A variant of the switch instruction that seems to also take two floating point values...
 # It being a check as to whether the match value is within this range is just a guess.
@@ -892,6 +894,46 @@ def read_to_int_cmd(arr: enumerate[int], symbol_ids: SymbolIds, opcode: int, is_
     return ToIntCmd(var)
 
 @dataclass
+class LoadKSMCmd:
+    variable: Var | int
+
+def read_load_ksm_cmd(arr: enumerate[int], symbol_ids: SymbolIds, opcode: int, is_const: bool) -> LoadKSMCmd:
+    assert not is_const
+    
+    var_int = next(arr)[1]
+    var = symbol_ids.get(var_int)
+    
+    return LoadKSMCmd(var)
+
+@dataclass
+class GetArgCountCmd:
+    pass
+
+def read_get_arg_count_cmd(arr: enumerate[int], symbol_ids: SymbolIds, opcode: int, is_const: bool) -> GetArgCountCmd:
+    assert not is_const
+    
+    return GetArgCountCmd()
+
+@dataclass
+class CaseLteCmd:
+    is_const: bool
+    value: Expr | Var | int
+    jump_offset: int
+
+def read_case_lte_cmd(arr: enumerate[int], symbol_ids: SymbolIds, opcode: int, is_const: bool) -> CaseLteCmd:
+    
+    value_int = next(arr)[1]
+    if is_const:
+        value = symbol_ids.get(value_int)
+        assert isinstance(value, Var) or isinstance(value, int)
+    else:
+        value = symbol_ids.get(value_int)
+    
+    jump_offset = next(arr)[1]
+    
+    return CaseLteCmd(is_const, value, jump_offset)
+
+@dataclass
 class UnknownCmd:
     opcode: int
     is_const: bool
@@ -935,7 +977,8 @@ INSTRUCTIONS = {
     0x27: read_else_if_cmd,
     0x28: read_endif_cmd,
     0x29: read_switch_cmd,
-    0x2a: read_case_cmd,
+    0x2a: read_case_eq_cmd,
+    0x2f: read_case_lte_cmd,
     0x30: read_case_range_cmd,
     0x37: read_breakswitch_cmd,
     0x38: read_endswitch_cmd,
@@ -954,6 +997,9 @@ INSTRUCTIONS = {
     0x6a: read_read_table_entries_vec2_cmd,
     0x6b: read_read_table_entries_vec3_cmd,
     0x6d: read_table_get_index_cmd,
+    
+    0x75: read_load_ksm_cmd,
+    0x77: read_get_arg_count_cmd,
     
     # TODO: are these noops?
     0x7c: read_noop_cmd,
@@ -1164,9 +1210,15 @@ def print_function_def(fn: FunctionDef) -> str:
                     value = f"LabelPoint"
                 case ThreadCmd(func, take_args, give_args) | Thread2Cmd(func, take_args, give_args):
                     start_indented_block = True
+                    
                     opcode = "Thread1" if isinstance(inst, ThreadCmd) else "Thread2"
+                    if isinstance(func, FunctionDef):
+                        label_or_func = json.dumps(func.name[1:func.name.rindex('_')] if func.name is not None else func.name)
+                    else:
+                        label_or_func = print_expr_or_var(func)
                     captures = ', '.join(print_expr_or_var(var) for var in give_args)
-                    value = f"{opcode} {print_expr_or_var(func)} Capture ( {captures} )"
+                    
+                    value = f"{opcode} {label_or_func} Capture ( {captures} )"
                 case DeleteRuntimeCmd(is_const, duration):
                     value = f"DeleteRuntime{'*' if is_const else '' } {print_expr_or_var(duration)}"                
                 case WaitCmd(is_const, duration):
@@ -1176,20 +1228,18 @@ def print_function_def(fn: FunctionDef) -> str:
                 case SwitchCmd(var, unused, jump_offset):
                     start_indented_block = True
                     value = f"Switch {print_expr_or_var(var)}" # , {hex(unused)}, {hex(jump_offset)}                
-                case CaseCmd(is_const, var, jump_offset):
-                    if indentation > 0:
-                        indentation -= 1
+                case CaseEqCmd(is_const, var, jump_offset):
                     start_indented_block = True
-                    value = f"Case{'*' if is_const else '' } {print_expr_or_var(var)}" # , {hex(jump_offset)}
+                    value = f"Case{'*' if is_const else '' } == {print_expr_or_var(var)}" # , {hex(jump_offset)}       
+                case CaseLteCmd(is_const, var, jump_offset):
+                    start_indented_block = True
+                    value = f"Case{'*' if is_const else '' } <= {print_expr_or_var(var)}" # , {hex(jump_offset)}
                 case CaseRangeCmd(is_const, lower, upper, jump_offset):
-                    if indentation > 0:
-                        indentation -= 1
                     start_indented_block = True
                     value = f"CaseRange{'*' if is_const else '' } ( {print_expr_or_var(lower)} to {print_expr_or_var(upper)}" # , {hex(jump_offset)}
                 case BreakSwitchCmd():
                     if indentation > 0:
                         indentation -= 1
-                    start_indented_block = True
                     value = f"BreakSwitch"
                 case EndSwitchCmd():
                     if indentation > 0:
@@ -1222,6 +1272,10 @@ def print_function_def(fn: FunctionDef) -> str:
                     value = f"WaitWhile {print_expr_or_var(condition)}"
                 case ToIntCmd(var):
                     value = f"ToInt {print_expr_or_var(var)}"
+                case LoadKSMCmd(var):
+                    value = f"LoadKSM {print_expr_or_var(var)}"
+                case GetArgCountCmd():
+                    value = f"GetArgCount"
                 case UnknownCmd(opcode, is_const, args):
                     value = f"Unk_0x{opcode:x}{'*' if is_const else ' '} ( {', '.join(print_expr_or_var(x) for x in args)} )"
                 case _:

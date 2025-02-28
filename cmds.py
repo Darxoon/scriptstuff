@@ -1,8 +1,10 @@
 from dataclasses import dataclass, replace
+from typing import Any
 
 import functions
 from other_types import EXPR_SYMBOLS, Expr, Label, ScriptImport, read_expr
 from tables import Table
+from code_parser import TokenStream, get_func_from_name, is_identifier, read_function_id
 from util import SymbolIds
 from variables import Var, VarCategory
 
@@ -900,3 +902,44 @@ INSTRUCTIONS = {
     0x89: read_wait_completed_cmd,
     0x9f: read_wait_while_cmd,
 }
+
+def cmd_from_string(code: str, current_func: functions.FunctionDef, symbol_ids: SymbolIds) -> Any:
+    tokens = TokenStream(code)
+    
+    match tokens.advance():
+        case 'GetArgs':
+            func = read_function_id(tokens, current_func, symbol_ids)
+            assert func is not None, "Expected reference to function"
+            assert isinstance(func, functions.FunctionDef), "Expected reference to locally defined function"
+            
+            tokens.expect('(')
+            
+            while tokens.peek() != ')':
+                raise NotImplementedError("TODO")
+            
+            result = GetArgsCmd(func, [])
+        case 'Return':
+            result = ReturnCmd()
+        case 'Call':
+            if tokens.peek() == '*':
+                is_const = True
+                tokens.advance()
+            else:
+                is_const = False
+            
+            func_name = tokens.advance()
+            assert is_identifier(func_name), "Expected function name"
+            func = get_func_from_name(func_name, symbol_ids)
+            
+            tokens.expect('(')
+            
+            while tokens.peek() != ')':
+                # TODO
+                tokens.advance()
+            
+            result = CallCmd(is_const, func, [])
+        
+        case default:
+            raise NotImplementedError(f"Instruction {default} not supported yet")
+    
+    return result

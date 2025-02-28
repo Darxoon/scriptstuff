@@ -253,8 +253,8 @@ def write_variables_yaml(sections: list[bytes], symbol_ids: SymbolIds):
     with open(argv[1] + '.variables.yaml', 'w', encoding='utf-8') as f:
         f.write(var_str)
 
-def parse_variables(var_input_file: dict, category_key: str, category: VarCategory) -> bytearray:
-    if category_key in var_input_file:
+def parse_variables(var_input_file: dict, category_key: str, category: VarCategory, symbol_ids: SymbolIds) -> bytearray:
+    if category_key in var_input_file and var_input_file[category_key] is not None:
         assert isinstance(var_input_file[category_key], list), f"{category.name} variables have to be a list"
         
         vars_obj = var_input_file[category_key]
@@ -264,6 +264,7 @@ def parse_variables(var_input_file: dict, category_key: str, category: VarCatego
         out.append(len(vars))
         
         for var in vars:
+            symbol_ids.add(var)
             out.extend(write_variable(var))
         
         return bytearray(out)

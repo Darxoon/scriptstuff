@@ -22,6 +22,7 @@ class FunctionDef:
     code: array
     code_offset: int
     instructions: list | None
+    instruction_strs: list[str] | None
     
     vars: list[Var]
     tables: list[Table]
@@ -85,7 +86,7 @@ def read_function_definitions(section: bytes, code_section: bytes) -> list[Funct
             if label.name is None:
                 label.alias = next(alphabet, None)
         
-        definitions.append(FunctionDef(name, id, is_public, field_0xc, return_var, field_0x34, code, code_offset, None, variables, tables, labels))
+        definitions.append(FunctionDef(name, id, is_public, field_0xc, return_var, field_0x34, code, code_offset, None, None, variables, tables, labels))
     
     assert len(definitions) == count
     return definitions
@@ -419,11 +420,19 @@ def function_definitions_from_yaml(function_definitions: list) -> list[FunctionD
         code_offset = 0 # TODO
         code = array('I', [])
         
-        instructions = []
         tables = []
         labels = []
         
-        out.append(FunctionDef(name, id, is_public, field_0xc, 0, field_0x34, code, code_offset, instructions, vars, tables, labels))
+        if 'body' in obj and obj['body'] is not None:
+            assert isinstance(obj['body'], list), "Function body has to be a list of instructions"
+            body_obj = obj['body']
+            
+            for line in body_obj:
+                assert isinstance(line, str), "Function body has to be a list of instructions"
+        else:
+            raise NotImplementedError()
+        
+        out.append(FunctionDef(name, id, is_public, field_0xc, 0, field_0x34, code, code_offset, None, body_obj, vars, tables, labels))
     
     return out
 
@@ -453,9 +462,9 @@ def write_function_def(fn: FunctionDef) -> bytearray:
     
     return bytearray(out)
 
-def parse_function_definitions(input_file: dict) -> bytearray:
+def parse_function_definitions(input_file: dict, symbol_ids: SymbolIds) -> tuple[list[FunctionDef], bytearray]:
     if 'definitions' not in input_file:
-        return bytearray([0, 0, 0, 0])
+        return [], bytearray([0, 0, 0, 0])
     
     assert isinstance(input_file['definitions'], list)
     definitions = function_definitions_from_yaml(input_file['definitions'])
@@ -463,6 +472,7 @@ def parse_function_definitions(input_file: dict) -> bytearray:
     out = bytearray(array('I', [len(definitions)]))
     
     for definition in definitions:
+        symbol_ids.add(definition)
         out.extend(write_function_def(definition))
     
-    return out
+    return definitions, out

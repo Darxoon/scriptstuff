@@ -6,7 +6,9 @@ from typing import TypeVar
 
 import yaml
 
+from cmds import cmd_from_string
 from functions import parse_function_definitions, print_function_definitions, print_function_imports
+from other_types import parse_imports
 from tables import print_tables
 from util import SymbolIds
 from variables import VarCategory, parse_variables, write_variables_yaml
@@ -98,14 +100,22 @@ def yaml_to_ksm(filename: str):
     assert isinstance(var_input_file, dict), "Input variables yaml file has to be a dict."
     
     sections: dict[int, bytearray] = {}
+    symbol_ids = SymbolIds()
     
     # section 0
     sections[0] = parse_section_0(input_file)
-    sections[1] = parse_function_definitions(input_file)
-    sections[2] = parse_variables(var_input_file, 'static_variables', VarCategory.Static)
+    funcs, sections[1] = parse_function_definitions(input_file, symbol_ids)
+    sections[2] = parse_variables(var_input_file, 'static_variables', VarCategory.Static, symbol_ids)
     # TODO: tables
-    sections[4] = parse_variables(var_input_file, 'constants', VarCategory.Const)
-    # TODO: imports
+    sections[4] = parse_variables(var_input_file, 'constants', VarCategory.Const, symbol_ids)
+    sections[5] = parse_imports(input_file, symbol_ids)
+    sections[6] = parse_variables(var_input_file, 'global_variables', VarCategory.Global, symbol_ids)
+    
+    for fn in funcs:
+        assert fn.instruction_strs is not None
+        fn.instructions = [cmd_from_string(line, fn, symbol_ids) for line in fn.instruction_strs]
+    
+    # sections[7] = ...
     
     section_list = [sections.get(i, bytearray([0, 0, 0, 0])) for i in range(9)]
     

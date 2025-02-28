@@ -41,3 +41,11 @@ class SymbolIds:
     
     def copy(self):
         return SymbolIds(layers=[layer.copy() for layer in self.layers])
+    
+    def flat(self) -> dict:
+        out = dict()
+        
+        for layer in self.layers:
+            out = out | layer
+        
+        return out

@@ -6,7 +6,7 @@ from itertools import chain
 import cmds
 import functions
 from tables import Table
-from util import SymbolIds, read_string
+from util import SymbolIds, read_string, write_string
 from variables import Var, VarCategory
 
 # function imports
@@ -56,10 +56,64 @@ def read_function_imports(section: bytes) -> list[ScriptImport]:
     assert len(imports) == count
     return imports
 
+def write_import(fn: ScriptImport) -> array[int]:
+    out = array('I')
+    
+    out.append(0xFFFFFFFF if fn.name is not None else 0)
+    out.append(fn.field_0x4)
+    out.append(fn.type.value)
+    out.append(0) # ?
+    out.append(fn.id) # ?
+    out.append(0) # ?
+    out.append(0) # ?
+    
+    if fn.name is not None:
+        out.extend(write_string(fn.name))
+    
+    return out
+
 def print_function_import(fn: ScriptImport) -> str:
     assert fn.name is not None, "Imported function name is None"
     
     return f"  - {{ id: 0x{fn.id:x}, name: '{fn.name}', field_0x4: {fn.field_0x4}, type: {fn.type.name} }}\n"
+
+def function_import_from_yaml(obj: dict) -> ScriptImport:
+    assert 'id' in obj and isinstance(obj['id'], int), "Import id (required) has to be an integer"
+    id = obj['id']
+    
+    if 'name' in obj:
+        assert isinstance(obj['name'], str), "Import name has to be an string"
+        name = obj['name']
+    else:
+        name = None
+    
+    assert 'field_0x4' in obj and isinstance(obj['field_0x4'], int), "Import field_0x4 (required) has to be an integer"
+    field_0x4 = obj['field_0x4']
+    
+    assert 'type' in obj and isinstance(obj['type'], str), f"\
+        Import type (required) has to be a string with value {', '.join(value.name for value in ImportType)}"
+    type = ImportType[obj['type']]
+    
+    return ScriptImport(name, field_0x4, type, id)
+
+def parse_imports(input_file: dict, symbol_ids: SymbolIds) -> bytearray:
+    if 'imports' not in input_file:
+        return bytearray([0, 0, 0, 0])
+    
+    assert isinstance(input_file['imports'], list), "Script imports have to be a list"
+    
+    imports = []
+    for obj in input_file['imports']:
+        assert isinstance(obj, dict), "Script import has to be an object"
+        imports.append(function_import_from_yaml(obj))
+    
+    out = array('I', [len(imports)])
+    
+    for fn in imports:
+        symbol_ids.add(fn)
+        out.extend(write_import(fn))
+    
+    return bytearray(out)
 
 # labels
 @dataclass

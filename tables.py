@@ -1,7 +1,7 @@
 from array import array
 from dataclasses import dataclass
 from enum import Enum
-from sys import argv
+
 from util import SymbolIds, read_string
 from variables import Var, VarCategory
 

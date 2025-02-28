@@ -1,8 +1,13 @@
 from array import array
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
+from itertools import chain
 
-from util import read_string
+import cmds
+import functions
+from tables import Table
+from util import SymbolIds, read_string
+from variables import Var, VarCategory
 
 # function imports
 # (I feel like I'm really misunderstanding this type)
@@ -92,3 +97,104 @@ def print_label(label: Label) -> str:
         code_offset: 0x{label.code_offset:x}\n"""
     
     return out_str
+
+# script expressions
+@dataclass
+class ExprSymbol:
+    label: str
+
+EXPR_SYMBOLS = {
+    0x3f: ExprSymbol('next_function'),
+    0x41: ExprSymbol('('),
+    0x42: ExprSymbol(')'),
+    0x43: ExprSymbol('||'),
+    0x44: ExprSymbol('&&'),
+    
+    0x45: ExprSymbol('|'),
+    0x46: ExprSymbol('&'),
+    0x47: ExprSymbol('^'),
+    0x48: ExprSymbol('<<'),
+    0x49: ExprSymbol('>>'),
+    
+    0x4a: ExprSymbol('=='),
+    0x4b: ExprSymbol('!='),
+    0x4c: ExprSymbol('>'),
+    0x4d: ExprSymbol('<'),
+    0x4e: ExprSymbol('>='),
+    0x4f: ExprSymbol('<='),
+    
+    0x52: ExprSymbol('%'),
+    0x53: ExprSymbol('+'),
+    0x54: ExprSymbol('-'),
+    0x55: ExprSymbol('*'),
+    0x56: ExprSymbol('/'),
+}
+
+@dataclass
+class Expr:
+    elements: list['Var | cmds.CallCmd | int'] = field(default_factory=lambda: [])
+
+def read_expr(initial_element: int | None, arr: enumerate[int], symbol_ids: SymbolIds, raise_on_ending_sequence = False) -> Expr:
+    elements = []
+    
+    values = chain([(0, initial_element)], arr) if initial_element is not None else arr
+    
+    for _, value in values:
+        if value == 0x40:
+            break
+        
+        if value == 0xc:
+            elements.append(cmds.read_call_cmd(arr, symbol_ids, cmds.ReadCmdOptions(0xc, False)))
+            continue
+        
+        if value in EXPR_SYMBOLS:
+            var = EXPR_SYMBOLS[value]
+        else:
+            var = symbol_ids.get(value)
+        elements.append(var)
+    
+    return Expr(elements)
+
+def print_expr_or_var(value, braces_around_expression = False) -> str:
+    match value:
+        case Expr(elements):
+            content = ' '.join(print_expr_or_var(x) for x in elements)
+            if braces_around_expression:
+                return f'( {content} )'
+            else:
+                return content
+        case ExprSymbol(label):
+            return label
+        case Var(name, alias, category, id, data_type, flags, user_data):
+            if name is not None:
+                return f"{category.name}:{name}"
+            elif alias is not None:
+                return f"{category.name}:{alias}"
+            elif category == VarCategory.Const and user_data is not None:
+                return f"{user_data}`" if isinstance(user_data, (int, float)) else repr(user_data)
+            else:
+                return f"{category.name}:0x{id:x}"
+        case ScriptImport(name) | functions.FunctionDef(name):
+            return f"fn:{name}"
+        case Label(name, alias, id):
+            if name is not None:
+                return f"label:{name}"
+            elif alias is not None:
+                return f"label:{alias}"
+            else:
+                return f"label:{hex(id)}"
+        case Table(name, id):
+            if name is not None:
+                return f"table:{name}"
+            else:
+                return f"table:{hex(id)}"
+        case cmds.CallCmd(is_const, func, args):
+            content = f"Call{'*' if is_const else ''} {func if isinstance(func, int) else func.name} ( {', '.join(print_expr_or_var(x) for x in args)} )"
+            if braces_around_expression:
+                return f'( {content} )'
+            else:
+                return content
+        case int(n):
+            return f"?0x{n:x}"
+        case _:
+            raise Exception(f"Unknown thing {repr(value)}")

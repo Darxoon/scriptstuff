@@ -4,8 +4,10 @@ from dataclasses import dataclass
 from enum import Enum
 import struct
 from sys import argv
+from types import NoneType
+from typing import Any
 
-from util import SymbolIds
+from util import SymbolIds, read_string, write_string
 
 class VarCategory(Enum):
     # script binary scope
@@ -18,10 +20,17 @@ class VarCategory(Enum):
     ClearTempVar = 5
     LocalVar = 6
 
-def read_string(section: bytes, offset_words: int) -> str:
-    buffer = section[offset_words * 4:]
-    bytelen = buffer.index(0)
-    return str(buffer[:bytelen], 'utf-8')
+# TODO: make this an enum as well
+VAR_TYPE_NAMES = {
+    0: 'Float',
+    1: 'Int',
+    3: 'String',
+    4: 'Alloc',
+    5: 'UserVar',
+    8: 'Func',
+    0xd: 'QueuedFree',
+    0xe: 'Uninitialized',
+}
 
 @dataclass
 class Var:
@@ -43,8 +52,10 @@ def read_variable(arr: enumerate[int], section: bytes, category: VarCategory) ->
     flags = raw_status >> 24
     
     if status == 0:
+        # bitwise convert int to float
         user_data = struct.unpack('!f', struct.pack('!I', next(arr)[1]))[0]
     elif status == 1:
+        # convert u32 to s32
         user_data = c_int(next(arr)[1]).value
     else:
         user_data = next(arr)[1]
@@ -81,16 +92,30 @@ def read_variable_defs(section: bytes, category: VarCategory) -> list[Var]:
     assert next(arr, None) == None
     return variables
 
-VAR_TYPE_NAMES = {
-    0: 'Float',
-    1: 'Int',
-    3: 'String',
-    4: 'Alloc',
-    5: 'UserVar',
-    8: 'Func',
-    0xd: 'QueuedFree',
-    0xe: 'Uninitialized',
-}
+def write_variable(var: Var) -> array[int]:
+    out = array('I')
+    
+    out.append(0xFFFFFFFF if var.name is not None else 0)
+    out.append(var.id)
+    out.append(var.data_type | var.flags << 24)
+    
+    if var.data_type == 0:
+        # float
+        out.append(struct.unpack('!I', struct.pack('!f', var.user_data))[0])
+    elif var.data_type == 3:
+        # string
+        out.append(0)
+    else:
+        out.append(int(var.user_data))
+    
+    if var.name is not None:
+        out.extend(write_string(var.name))
+    
+    if var.data_type == 3:
+        assert isinstance(var.user_data, (str, NoneType)), "A variable of type string's content has to be a string"
+        out.extend(write_string(var.user_data if var.user_data is not None else ""))
+    
+    return out
 
 def print_var(var: Var, indentation_level: int = 1) -> str:
     indent = '  ' * indentation_level
@@ -129,8 +154,52 @@ def print_var(var: Var, indentation_level: int = 1) -> str:
     
     return result
 
+def var_from_yaml(var: Any, category: VarCategory) -> Var:
+    assert isinstance(var, dict), "Variable has to be an object"
+    
+    if 'name' in var and var['name'] is not None:
+        assert isinstance(var['name'], str), "Variable name has to be a string"
+        name = var['name']
+    else:
+        name = None
+    
+    if 'alias' in var and var['alias'] is not None:
+        assert isinstance(var['alias'], str), "Variable alias has to be a string"
+        alias = var['alias']
+        
+        assert alias.startswith(category.name + ':'), f"Variable has to be a {category.name}, not {alias}"
+        alias = alias[len(category.name) + 1:]
+    else:
+        alias = None
+    
+    assert 'id' in var and isinstance(var['id'], int), "Variable's id (required) has to be an integer"
+    id = var['id']
+    
+    assert 'type' in var and isinstance(var['type'], (str, int)), "Variable's type (required) has to be a string or integer"
+    data_type = var['type']
+    
+    if 'flags' in var and var['flags'] is not None:
+        assert isinstance(var['flags'], int), "Variable flags has to be an integer"
+        flags = var['flags']
+    else:
+        flags = 0
+    
+    if 'content' in var and var['content'] is not None:
+        # assert isinstance(var['content'], int), "Variable content has to be an integer"
+        content = var['content']
+    else:
+        content = 0
+    
+    if isinstance(data_type, str):
+        try:
+            data_type = next(i for i, name in VAR_TYPE_NAMES.items() if name == data_type)
+        except StopIteration:
+            raise ValueError("Variable's type (required) has to be one of the following values: "
+                             + ','.join(VAR_TYPE_NAMES.values()))
+    
+    return Var(name, alias, category, id, data_type, flags, content)
 
-def write_variables(sections: list[bytes], symbol_ids: SymbolIds):
+def write_variables_yaml(sections: list[bytes], symbol_ids: SymbolIds):
     # section 2
     variables = read_variable_defs(sections[2], VarCategory.Static)
     
@@ -183,3 +252,20 @@ def write_variables(sections: list[bytes], symbol_ids: SymbolIds):
     
     with open(argv[1] + '.variables.yaml', 'w', encoding='utf-8') as f:
         f.write(var_str)
+
+def parse_variables(var_input_file: dict, category_key: str, category: VarCategory) -> bytearray:
+    if category_key in var_input_file:
+        assert isinstance(var_input_file[category_key], list), f"{category.name} variables have to be a list"
+        
+        vars_obj = var_input_file[category_key]
+        vars = [var_from_yaml(var_obj, category) for var_obj in vars_obj]
+        
+        out = array('I')
+        out.append(len(vars))
+        
+        for var in vars:
+            out.extend(write_variable(var))
+        
+        return bytearray(out)
+    else:
+        return bytearray([0, 0, 0, 0])

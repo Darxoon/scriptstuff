@@ -6,8 +6,8 @@ from string import ascii_lowercase
 
 from other_types import Label, ScriptImport, print_function_import, print_label, read_function_imports, read_label
 from tables import Table, print_table, read_table
-from util import SymbolIds, read_string
-from variables import Var, VarCategory, print_var, read_variable
+from util import SymbolIds, read_string, write_string
+from variables import Var, VarCategory, print_var, read_variable, var_from_yaml, write_variable
 
 # script expressions
 @dataclass
@@ -1370,3 +1370,97 @@ def print_function_definitions(sections: list[bytes], symbol_ids: SymbolIds) -> 
         is_first = False
     
     return out_str
+
+def function_definitions_from_yaml(function_definitions: list) -> list[FunctionDef]:
+    out: list[FunctionDef] = []
+    
+    for obj in function_definitions:
+        assert isinstance(obj, dict), "Function definition has to be an object"
+        
+        if 'name' not in obj or obj['name'] is None:
+            name = None
+        else:
+            assert isinstance(obj['name'], str), "Function name has to be a string"
+            name = obj['name']
+        
+        # TODO: de-boilerplate this into a helper class
+        assert 'id' in obj and isinstance(obj['id'], int), "Function id (required) has to be an integer"
+        id = obj['id']
+        
+        assert 'is_public' in obj and isinstance(obj['is_public'], int), "Function's 'is_public' (required) has to be an integer"
+        is_public = obj['is_public']
+        
+        assert 'field_0xc' in obj and isinstance(obj['field_0xc'], int), "Function's 'field_0xc' (required) has to be an integer"
+        field_0xc = obj['field_0xc']
+        
+        assert 'return_var' in obj and isinstance(obj['return_var'], (str, int)), "Function's 'return_var' (required) has to be a string or integer"
+        return_var_str = obj['return_var']
+        
+        assert 'field_0x34' in obj and isinstance(obj['field_0x34'], int), "Function's 'field_0x34' (required) has to be an integer"
+        field_0x34 = obj['field_0x34']
+        
+        if 'variables' in obj and obj['variables'] is not None:
+            variables_obj = obj['variables']
+            assert isinstance(variables_obj, list), "Function variables have to be a list of variables"
+            
+            vars = []
+            
+            for var_obj in variables_obj:
+                assert isinstance(var_obj, dict), "Variable has to be an object"
+                vars.append(var_from_yaml(var_obj, VarCategory.LocalVar))
+        else:
+            vars = []
+        
+        assert 'tables' not in obj, "TODO"
+        assert 'labels' not in obj, "TODO"
+        
+        code_offset = 0 # TODO
+        code = array('I', [])
+        
+        instructions = []
+        tables = []
+        labels = []
+        
+        out.append(FunctionDef(name, id, is_public, field_0xc, 0, field_0x34, code, code_offset, instructions, vars, tables, labels))
+    
+    return out
+
+def write_function_def(fn: FunctionDef) -> bytearray:
+    out = array('I')
+    
+    out.append(0xFFFFFFFF if fn.name is not None else 0)
+    out.append(fn.id)
+    out.append(fn.is_public)
+    out.append(fn.field_0xc)
+    out.append(0) # code offset and code end will be patched in later
+    out.append(0)
+    out.append(fn.return_var)
+    out.append(fn.field_0x34)
+    
+    if fn.name is not None:
+        out.extend(write_string(fn.name))
+    
+    if len(fn.vars) > 0:
+        out.append(len(fn.vars))
+        
+        for var in fn.vars:
+            out.extend(write_variable(var))
+    
+    out.append(0)
+    out.append(0)
+    
+    return bytearray(out)
+
+def parse_function_definitions(input_file: dict) -> bytearray:
+    if 'definitions' not in input_file:
+        return bytearray([0, 0, 0, 0])
+    
+    assert isinstance(input_file['definitions'], list)
+    definitions = function_definitions_from_yaml(input_file['definitions'])
+    
+    out = bytearray(array('I', [len(definitions)]))
+    
+    for definition in definitions:
+        out.extend(write_function_def(definition))
+    
+    return out

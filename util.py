@@ -1,9 +1,20 @@
+from array import array
+from math import ceil
 from typing import Any
 
 def read_string(section: bytes, offset_words: int) -> str:
     buffer = section[offset_words * 4:]
     bytelen = buffer.index(0)
     return str(buffer[:bytelen], 'utf-8')
+
+def write_string(value: str) -> array[int]:
+    int_len = ceil((len(value) + 1) / 4)
+    out = array('I', [int_len])
+    
+    name_bytes = value.encode()
+    name_bytes += b'\0' * (int_len * 4 - len(name_bytes))
+    out.extend(array('I', name_bytes))
+    return out
 
 class SymbolIds:
     layers: list[dict]

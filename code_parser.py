@@ -1,6 +1,7 @@
 import functions
 from other_types import ScriptImport
 from util import SymbolIds
+from variables import Var
 
 # tokenization
 def is_identifier(string: str) -> bool:
@@ -38,9 +39,10 @@ class TokenStream:
         current, self.current = self.current, next(self.tokens, "")
         return current
     
-    def expect(self, token: str) -> str:
-        assert self.advance() == token
-        return token
+    def expect(self, expected: str) -> str:
+        token = self.advance()
+        assert token == expected, f"Expected token {expected!r}, got {token!r}"
+        return expected
 
 # parsing
 def get_func_from_name(name: str, symbol_ids: SymbolIds) -> functions.FunctionDef | ScriptImport:
@@ -66,3 +68,56 @@ def read_function_id(tokens: TokenStream, current_func: functions.FunctionDef, s
         return current_func
     
     return get_func_from_name(name, symbol_ids)
+
+def read_number_var(tokens: TokenStream, constants: list[Var]) -> Var | None:
+    if not tokens.peek().isdigit():
+        return None
+    
+    # parse number
+    num = tokens.advance()
+    
+    if tokens.peek() == '.':
+        raise NotImplementedError("Floats not supported yet")
+    
+    tokens.expect('`')
+    
+    # find var
+    var = next((c for c in constants if c.data_type == 1 and c.user_data == int(num)), None)
+    if var is None:
+        raise ValueError(f"Could not find Int constant with content {num}")
+    
+    return var
+
+def read_string_var(tokens: TokenStream, constants: list[Var]) -> Var | None:
+    if tokens.peek() not in "'\"":
+        return None
+    
+    # parse string
+    quote_type = tokens.advance()
+    string = ""
+    
+    while tokens.peek() != quote_type and tokens.peek() != "":
+        string += ' ' + tokens.advance()
+    
+    string = string[1:]
+    
+    if tokens.advance() == "":
+        raise ValueError("Unclosed string")
+    
+    # find var
+    var = next((c for c in constants if c.data_type == 3 and c.user_data == string), None)
+    if var is None:
+        raise ValueError(f"Could not find String constant with content {string!r}")
+    
+    return var
+
+def read_var_ref(tokens: TokenStream, current_func: functions.FunctionDef, 
+                 constants: list[Var], symbol_ids: SymbolIds) -> functions.FunctionDef | ScriptImport | Var | None:
+    if (num := read_number_var(tokens, constants)) is not None:
+        return num
+    elif (string := read_string_var(tokens, constants)) is not None:
+        return string
+    elif (func := read_function_id(tokens, current_func, symbol_ids)) is not None:
+        return func
+    else:
+        return None

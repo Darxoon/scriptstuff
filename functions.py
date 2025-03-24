@@ -106,8 +106,8 @@ def analyze_function_def(fn: FunctionDef, symbol_ids: SymbolIds):
         try:
             options = cmds.ReadCmdOptions(value & 0xfffffeff, value & 0x100 != 0, fn.code_offset + i)
             
-            if value & 0xfffffeff in cmds.INSTRUCTIONS:
-                instruction = cmds.INSTRUCTIONS[value & 0xfffffeff](arr, symbol_ids, options)
+            if value & 0xfffffeff in cmds.INSTRUCTIONS.readers:
+                instruction = cmds.INSTRUCTIONS.readers[value & 0xfffffeff](arr, symbol_ids, options)
                 
                 match instruction:
                     case cmds.ThreadCmd(func):
@@ -476,3 +476,17 @@ def parse_function_definitions(input_file: dict, symbol_ids: SymbolIds) -> tuple
         out.extend(write_function_def(definition))
     
     return definitions, out
+
+def parse_function_implementations(funcs: list[FunctionDef], symbol_ids: SymbolIds) -> bytearray:
+    out = array('I')
+    
+    out.append(0) # amount of 32-bit words in section, will be patched in later
+    
+    for func in funcs[::-1]:
+        assert func.instructions is not None
+        
+        for cmd in func.instructions:
+            assert type(cmd) in cmds.INSTRUCTIONS.writers, f"Instruction {type(cmd).__name__} not supported yet"
+            cmds.INSTRUCTIONS.writers[type(cmd)](cmd, out)
+    
+    return bytearray(out)

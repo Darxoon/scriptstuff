@@ -1,12 +1,21 @@
+from array import array
 from dataclasses import dataclass, replace
-from typing import Any
+from typing import Any, Callable
 
 import functions
-from other_types import EXPR_SYMBOLS, Expr, Label, ScriptImport, read_expr
+from other_types import EXPR_SYMBOLS, Expr, Label, ScriptImport, read_expr, write_expr_or_var
 from tables import Table
-from code_parser import TokenStream, get_func_from_name, is_identifier, read_function_id
+from code_parser import TokenStream, get_func_from_name, is_identifier, read_function_id, read_var_ref
 from util import SymbolIds
 from variables import Var, VarCategory
+
+type ReadCmdFunc = Callable[[enumerate[int], SymbolIds, ReadCmdOptions], Any]
+type WriteCmdFunc[T] = Callable[[T, array[int]], Any]
+
+class InstructionRegistry:
+    def __init__(self):
+        self.readers: dict[int, ReadCmdFunc] = {}
+        self.writers: dict[type, WriteCmdFunc] = {}
 
 @dataclass
 class ReadCmdOptions:
@@ -14,6 +23,7 @@ class ReadCmdOptions:
     is_const: bool
     cmd_offset: int | None = None
 
+# command definitions
 @dataclass
 class ReturnValCmd:
     is_const: bool
@@ -54,6 +64,17 @@ def read_call_cmd(arr: enumerate[int], symbol_ids: SymbolIds, options: ReadCmdOp
             args.append(read_expr(value, arr, symbol_ids))
     
     return CallCmd(options.is_const, func, args)
+
+def write_call_cmd(cmd: CallCmd, out: array[int]):
+    if not isinstance(cmd.func, int):
+        out.append(cmd.func.id)
+    else:
+        out.append(cmd.func)
+    
+    for arg in cmd.args:
+        write_expr_or_var(arg, out)
+    
+    out.append(0x11)
 
 @dataclass
 class CallAsThreadCmd:
@@ -299,6 +320,9 @@ def read_return_cmd(arr: enumerate[int], symbol_ids: SymbolIds, options: ReadCmd
     
     return ReturnCmd()
 
+def write_return_cmd(cmd: ReturnCmd, out: array[int]):
+    pass
+    
 @dataclass
 class GetArgsCmd:
     func: 'functions.FunctionDef'
@@ -321,6 +345,14 @@ def read_get_args_cmd(arr: enumerate[int], symbol_ids: SymbolIds, options: ReadC
         args.append(var)
         
     return GetArgsCmd(func, args)
+
+def write_get_args_cmd(cmd: GetArgsCmd, out: array[int]):
+    out.append(cmd.func.id)
+    
+    for arg in cmd.args:
+        write_expr_or_var(arg, out)
+    
+    out.append(0x8)
 
 @dataclass
 class IfCmd:
@@ -838,72 +870,96 @@ def read_unknown_cmd(arr: enumerate[int], symbol_ids: SymbolIds, options: ReadCm
     
     return UnknownCmd(options.opcode, options.is_const, args)
 
-INSTRUCTIONS = {
-    # TODO: some of the noops return 1, some 3, might be worth looking into
-    0x2: read_noop_cmd,
-    0x3: read_returnval_cmd,
-    0x4: read_label_cmd,
-    0x5: read_get_args_cmd,
-    0x6: read_thread_cmd,
-    0x7: read_thread2_cmd,
-    0x9: read_return_cmd,
-    0xa: read_goto_label_cmd,
-    0xc: read_call_cmd,
-    0xd: read_call_as_thread_cmd,
-    0xe: read_call_as_child_thread_cmd,
-    0x12: read_delete_runtime_cmd,
-    0x16: read_wait_cmd,
-    0x17: read_wait_ms_cmd,
-    0x18: read_if_cmd,
+# command registry
+def register_cmds():
+    instructions = InstructionRegistry()
     
-    # Unusual If Instructions (experimental)
-    #0x19: read_ifequal_cmd,
-    #0x1d: read_ifnotequal_cmd,
-    
-    # Switch, Case Instructions
-    0x26: read_else_cmd,
-    0x27: read_else_if_cmd,
-    0x28: read_endif_cmd,
-    0x29: read_switch_cmd,
-    0x2a: read_case_eq_cmd,
-    0x2f: read_case_lte_cmd,
-    0x30: read_case_range_cmd,
-    0x37: read_breakswitch_cmd,
-    0x38: read_endswitch_cmd,
-    
-    # While Instructions
-    0x39: read_while_cmd,
-    0x3a: read_break_cmd,
-    0x3c: read_end_while_cmd,
-    
-    0x3d: read_set_cmd,
-    
-    # Array Instructions 
-    0x67: read_read_table_length_cmd,
-    0x68: read_read_table_entry_cmd,
-    0x69: read_read_table_entry_to_var_cmd,
-    0x6a: read_read_table_entries_vec2_cmd,
-    0x6b: read_read_table_entries_vec3_cmd,
-    0x6d: read_table_get_index_cmd,
-    
-    0x75: read_load_ksm_cmd,
-    0x76: read_set_ksm_unk_cmd,
-    0x77: read_get_arg_count_cmd,
-    
-    # TODO: are these noops?
-    0x7c: read_noop_cmd,
-    0x7d: read_noop_cmd,
-    
-    0x80: read_call_var_cmd,
-    # 0x81: read_call_var_as_thread,
-    # 0x82: read_call_var_as_child_thread,
-    0x85: read_to_int_cmd,
-    0x86: read_to_float_cmd,
-    0x89: read_wait_completed_cmd,
-    0x9f: read_wait_while_cmd,
-}
+    def add_cmd[T](opcode: int, cls: type[T] | None = None, read_func: ReadCmdFunc | None = None, write_func: WriteCmdFunc[T] | None = None):
+        if read_func is not None:
+            instructions.readers[opcode] = read_func
+        
+        if write_func is not None:
+            assert cls is not None
+            instructions.writers[cls] = write_func
 
-def cmd_from_string(code: str, current_func: functions.FunctionDef, symbol_ids: SymbolIds) -> Any:
+    # TODO: some of the noops return 1, some 3, might be worth looking into
+    add_cmd(0x2, read_func=read_noop_cmd)
+    add_cmd(0x3, read_func=read_returnval_cmd)
+    add_cmd(0x4, read_func=read_label_cmd)
+    
+    add_cmd(0x5, GetArgsCmd, read_get_args_cmd, write_get_args_cmd)
+    
+    add_cmd(0x6, read_func=read_thread_cmd)
+    add_cmd(0x7, read_func=read_thread2_cmd)
+    
+    add_cmd(0x9, ReturnCmd, read_return_cmd, write_return_cmd)
+    
+    add_cmd(0xa, read_func=read_goto_label_cmd)
+    
+    add_cmd(0xc, CallCmd, read_call_cmd, write_call_cmd)
+    
+    add_cmd(0xd, read_func=read_call_as_thread_cmd)
+    add_cmd(0xe, read_func=read_call_as_child_thread_cmd)
+    add_cmd(0x12, read_func=read_delete_runtime_cmd)
+    add_cmd(0x16, read_func=read_wait_cmd)
+    add_cmd(0x17, read_func=read_wait_ms_cmd)
+    add_cmd(0x18, read_func=read_if_cmd)
+        
+    # Unusual If Instructions (experimental)
+    # add_cmd(0x19, read_ifequal_cmd)
+    # add_cmd(0x1d, read_ifnotequal_cmd)
+        
+    # Switch, Case Instructions
+    add_cmd(0x26, read_func=read_else_cmd)
+    add_cmd(0x27, read_func=read_else_if_cmd)
+    add_cmd(0x28, read_func=read_endif_cmd)
+    add_cmd(0x29, read_func=read_switch_cmd)
+    add_cmd(0x2a, read_func=read_case_eq_cmd)
+    add_cmd(0x2f, read_func=read_case_lte_cmd)
+    add_cmd(0x30, read_func=read_case_range_cmd)
+    add_cmd(0x37, read_func=read_breakswitch_cmd)
+    add_cmd(0x38, read_func=read_endswitch_cmd)
+        
+    # While Instructions
+    add_cmd(0x39, read_func=read_while_cmd)
+    add_cmd(0x3a, read_func=read_break_cmd)
+    add_cmd(0x3c, read_func=read_end_while_cmd)
+        
+    add_cmd(0x3d, read_func=read_set_cmd)
+        
+    # Array Instructions 
+    add_cmd(0x67, read_func=read_read_table_length_cmd)
+    add_cmd(0x68, read_func=read_read_table_entry_cmd)
+    add_cmd(0x69, read_func=read_read_table_entry_to_var_cmd)
+    add_cmd(0x6a, read_func=read_read_table_entries_vec2_cmd)
+    add_cmd(0x6b, read_func=read_read_table_entries_vec3_cmd)
+    add_cmd(0x6d, read_func=read_table_get_index_cmd)
+    
+    add_cmd(0x6e, read_func=read_noop_cmd)
+    add_cmd(0x6f, read_func=read_noop_cmd)
+        
+    add_cmd(0x75, read_func=read_load_ksm_cmd)
+    add_cmd(0x76, read_func=read_set_ksm_unk_cmd)
+    add_cmd(0x77, read_func=read_get_arg_count_cmd)
+        
+    # TODO: are these noops?
+    add_cmd(0x7c, read_func=read_noop_cmd)
+    add_cmd(0x7d, read_func=read_noop_cmd)
+        
+    add_cmd(0x80, read_func=read_call_var_cmd)
+    # add_cmd(0x81, read_func=read_call_var_as_thread)
+    # add_cmd(0x82, read_func=read_call_var_as_child_thread)
+    add_cmd(0x85, read_func=read_to_int_cmd)
+    add_cmd(0x86, read_func=read_to_float_cmd)
+    add_cmd(0x89, read_func=read_wait_completed_cmd)
+    add_cmd(0x9f, read_func=read_wait_while_cmd)
+    
+    return instructions
+
+INSTRUCTIONS = register_cmds()
+
+# text syntax
+def cmd_from_string(code: str, current_func: functions.FunctionDef, constants: list[Var], symbol_ids: SymbolIds) -> Any:
     tokens = TokenStream(code)
     
     match tokens.advance():
@@ -931,15 +987,24 @@ def cmd_from_string(code: str, current_func: functions.FunctionDef, symbol_ids: 
             assert is_identifier(func_name), "Expected function name"
             func = get_func_from_name(func_name, symbol_ids)
             
+            args = []
             tokens.expect('(')
             
             while tokens.peek() != ')':
-                # TODO
-                tokens.advance()
+                var = read_var_ref(tokens, current_func, constants, symbol_ids)
+                
+                if is_const:
+                    args.append(var)
+                else:
+                    # TODO: full expressions
+                    args.append(Expr([var] if var is not None else []))
+                
+                if tokens.peek() != ')':
+                    tokens.expect(',')
             
-            result = CallCmd(is_const, func, [])
+            result = CallCmd(is_const, func, args)
         
         case default:
-            raise NotImplementedError(f"Instruction {default} not supported yet")
+            raise NotImplementedError(f"Instruction {default} not supported yet (can't parse)")
     
     return result

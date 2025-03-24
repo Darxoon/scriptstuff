@@ -184,9 +184,11 @@ EXPR_SYMBOLS = {
     0x56: ExprSymbol('/'),
 }
 
+type ExprValue = functions.FunctionDef | ScriptImport | Var | cmds.CallCmd | ExprSymbol | int
+
 @dataclass
 class Expr:
-    elements: list['Var | cmds.CallCmd | int'] = field(default_factory=lambda: [])
+    elements: list[ExprValue] = field(default_factory=lambda: [])
 
 def read_expr(initial_element: int | None, arr: enumerate[int], symbol_ids: SymbolIds, raise_on_ending_sequence = False) -> Expr:
     elements = []
@@ -208,6 +210,30 @@ def read_expr(initial_element: int | None, arr: enumerate[int], symbol_ids: Symb
         elements.append(var)
     
     return Expr(elements)
+
+def write_expr_or_var(value: Expr | Var | int, out: array[int]):
+    if isinstance(value, Var):
+        out.append(value.id)
+        return
+    if isinstance(value, int):
+        out.append(value)
+        return
+    
+    for element in value.elements:
+        match element:
+            case Var() | ScriptImport():
+                out.append(element.id)
+            case cmds.CallCmd():
+                cmds.write_call_cmd(element, out)
+            case ExprSymbol():
+                id = next(key for key, val in EXPR_SYMBOLS.items() if val == element)
+                out.append(id)
+            case int(x):
+                out.append(x)
+            case default:
+                raise ValueError(f"Unknown expression value {default!r}")
+    
+    out.append(0x40)
 
 def print_expr_or_var(value, braces_around_expression = False) -> str:
     match value:
